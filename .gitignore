@@ -1,3 +1,6 @@
-data/
+data/*
+!data/analysis/
+data/analysis/*
+!data/analysis/processed_contributors_parquet_sample
 tmp/
 results/
