@@ -6,7 +6,7 @@ format:
     code-fold: false
 ---
 
-# Test hypotheses
+# Notes on the Analyses
 
 ## Overview:
 
@@ -28,22 +28,29 @@ These: für Eliten ist Identity-Politics zwar wichtig, wenn es aber um ihre eign
 
 ## Contributors:
 
-It is possible to say something on H1-3 here
+It is possible to say something on H1-3 with this data alone.
 
 ### Descriptives:
 
-Comparing ideological distributions between sectors visually.
+**Compare Industries**: Comparing ideological distributions between sectors visually.
 
-#conclusion: ff12 might be fitting better because it is less coarse? on the other hand, seeing software being so far left...
+- Dummys don't give many insights
+  - why does ff12 have so many NAs? #problem
+  - seems to have to do something with case_when / ifelse!
+- boxplots tells more information
+  - Is there a meaningful difference in ff12 and ff49?
+- best are densities!
+  - always removes data points because outside of the range - that should be no problem on the full dataset
+  - shows that outliers might be a problem - it is not necessarily between -2 and 2!
 
-When it comes to the descriptive statistics, one can see that it is not a problem of too few observations - there's only 1 industry-occupation pair on the sample with less than 20 observations per group. I probably won't have to filter them out - maybe the variance inside of these groups explains the variance outside of the groups quite well.
+### Inferential:
+
+The models that run on aggregated data should provide similar measures to 
 
 
 
 
-
-
-## H1: Tech employees are on average more liberal than employees in other firms
+## OLD
 
 ### Overview
 

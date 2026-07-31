@@ -69,9 +69,10 @@ See https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/det_49_
 
 For Fama-French 49, this would be our definition of Tech: Tech = Hardw, Softw, Chips
 
-**INCERTAINTY**: should I use Fama-French 12? which is better for my purpose? => look up the differences in the papers! #problem https://volkovanotes.wordpress.com/2017/08/16/sic-code-match-to-fama-french-industries/ for this
+**INCERTAINTY**: should I use Fama-French 12? which is better for my purpose? => plot both and compare! #problem
 
-=> I could be computing both?
+=> eventual researcher degree of freedom here?
+
 
 ### Robustness:
 
@@ -103,6 +104,8 @@ I created lists of occupations that I query via regex.
 
 - Does this theoretical distinction hold? How does @Selling motivate that theoretically? #problem
 - I didn't develop the full lists yet, how do I do this methodologically correct?
+
+**leaders -> selling!!!**
 
 ## Local ideological means
 

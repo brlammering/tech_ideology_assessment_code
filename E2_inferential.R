@@ -52,8 +52,6 @@ contributors |>
 
 contributors |> count(ritter_is_tech)
 
-m1 <- lm("contributor.cfscore ~ ritter_is_tech", contributors)
-
 m2 <- lm("contributor.cfscore ~ ff49_is_tech", contributors)
 
 m3 <- lm("contributor.cfscore ~ sector_ff49", contributors)

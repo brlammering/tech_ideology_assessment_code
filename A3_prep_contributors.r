@@ -196,7 +196,7 @@ ff_sic_lookup <- read_csv("data/raw/sic/sic_ff_lookup.csv")
 ff_sic_lookup <- ff_sic_lookup |> 
   filter(in_sec == TRUE)
 
-DIME_contributors |> left_join(sic_lookup, by = c("sic" = "sic_int"))
+DIME_contributors <- DIME_contributors |> left_join(sic_lookup, by = c("sic" = "sic"))
 
 
 DIME_contributors <- DIME_contributors |> 

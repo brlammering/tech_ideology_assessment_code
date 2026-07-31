@@ -69,121 +69,78 @@ dir.create("results", recursive = TRUE, showWarnings = FALSE)
 #                                TRUE ~ full_name),
 #          y = rep(c(-0.05, -0.1), times = 5))
 
+
+
 # Compare industries -----------------------------------------------------
 
 
 # dummies don't say much:
-
-p_ritter_is_tech <- contributors |> 
-    ggplot(aes(ritter_is_tech, contributor.cfscore)) +
-    geom_boxplot() + 
-    theme_bw() +
-    theme(axis.text.x = element_text(angle = 90)) +
-    labs(title = "Comparing employee ideology in the tech sector with others, using Ritter's classification")
 
 p_ff49_is_tech <- contributors |> 
     ggplot(aes(ff49_is_tech, contributor.cfscore)) +
     geom_boxplot() + 
     theme_bw() +
     theme(axis.text.x = element_text(angle = 90)) +
-    labs(title = "Employees in the tech sector measured via Ritter's classification is more liberal than the median of all other people")
+    labs(title = "Using FF49's classification (Softw, Hardw, Chips)")
 
+contributors <- contributors |> 
+  mutate(ff12_is_tech = ifelse(ff12 == 6, TRUE, FALSE)) |> 
+  compute() # has many NAs - why?
 
-# boxplots, but especially density are more meaningful
-
-p_ff49_boxplot <- contributors |> 
-    ggplot(aes(sector_ff49, contributor.cfscore, color = ff49_is_tech)) +
+p_ff12_is_tech <- contributors |> 
+    ggplot(aes(ff12_is_tech, contributor.cfscore)) +
     geom_boxplot() + 
     theme_bw() +
     theme(axis.text.x = element_text(angle = 90)) +
-    labs(title = "Employee ideology by ff49 industrial sector", subtitle = "from democrat (-) to republican (+)")
+    labs(title = "Using FF12's classification (BusEq)")
 
+p_ff12_is_tech + p_ff49_is_tech + patchwork::plot_annotation("Comparing employee ideology in the tech sector with others")
+
+# Do the different industry specifications differ meaningfully?
+
+# boxplots are more powerful
+
+p_ff12_boxplot <- contributors |> 
+    ggplot(aes(ff12_abbr, contributor.cfscore, color = ff49_is_tech)) +
+    geom_boxplot() + 
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90)) +
+    labs(title = "ff12")
+
+p_ff49_boxplot <- contributors |> 
+    ggplot(aes(ff49_abbr, contributor.cfscore, color = ff49_is_tech)) +
+    geom_boxplot() + 
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90)) +
+    labs(title = "ff49")
+
+p_ff12_boxplot / p_ff49_boxplot + plot_annotation(
+  title = "Employee ideology by industrial sector", 
+  subtitle = "from democrat (-) to republican (+)"
+)
+
+# densities even more so
+
+p_ff12_density <- contributors |>
+  ggplot(aes(contributor.cfscore)) +
+  geom_density() +
+  facet_wrap(vars(ff12_abbr))
 
 p_ff49_density <- contributors |>
   ggplot(aes(contributor.cfscore)) +
   geom_density() +
-  facet_wrap(vars(sector_ff49))
+  facet_wrap(vars(ff49_abbr))
 
+p_ff12_density + p_ff49_density + plot_annotation(
+  title = "Density of cfscores per industry"
+)
 
-# displaying and saving
-
-p_ritter_is_tech + p_ff49_is_tech + p_ff49_density + p_ff49_boxplot
+# saving
 
 ggsave("results/ideology_by_ritter_is_tech.pdf", p_ritter_is_tech)
 ggsave("results/ideology_by_ff49_is_tech.pdf", p_ff49_is_tech)
 ggsave("results/ideology_by_ff49_density.pdf", p_ff49_density)
 ggsave("results/ideology_by_ff49_boxplot.pdf", p_ff49_boxplot)
-
-
-
-# how many observations are we talking of? descriptive tables ------------
-
-
-
-t_descriptive_statistics_by_ff49_occupation <- contributors |> 
-  group_by(sector_ff49, occupation) |> 
-  summarise(
-    sector_ff49 = sector_ff49,
-    occupation = occupation,
-    n = n(),
-    mean_cfscore = mean(contributor.cfscore),
-    sd_cfscore = sd(contributor.cfscore),
-    na.rm = TRUE
-  ) |> 
-  arrange(desc(n)) |> 
-  collect()
-
-t_descriptive_statistics_by_ff49_occupation_smaller_20 <- contributors |> 
-  group_by(sector_ff49, occupation) |> 
-  summarise(
-    sector_ff49 = sector_ff49,
-    occupation = occupation,
-    n = n(),
-    mean_cfscore = mean(contributor.cfscore),
-    sd_cfscore = sd(contributor.cfscore),
-    na.rm = TRUE
-  ) |> 
-  filter(
-    n < 20
-  ) |> 
-  arrange(desc(n)) |> 
-  collect()
-
-# print the results to latex
-
-print.xtable(xtable(
-        t_descriptive_statistics_by_ff49_occupation,
-        caption = "Descriptive Statistics by ff49",
-    ),
-    type = "latex",
-    file = "results/descriptive_statistics_by_ff49_occupation"
-)
-
-print.xtable(xtable(
-        t_descriptive_statistics_by_ff49_occupation_smaller_20,
-        caption = "Descriptive Statistics by ff49 that have n < 20",
-    ),
-    type = "latex",
-    file = "results/descriptive_statistics_by_ff49_occupation_smaller_20"
-)
-
-contributors |> 
-  group_by(sector_ff49, occupation) |> 
-  summarize(
-    sector_ff49 = sector_ff49,
-    occupation = occupation,
-    n = n(),
-    mean_cfscore = mean(contributor.cfscore),
-    sd_cfscore = sd(contributor.cfscore),
-    na.rm = TRUE
-  ) |> 
-  filter(
-    n < 20
-  ) |> 
-  ungroup() |> 
-  count() |> 
-  collect() |> 
-  deframe()
 
 
 # other descriptive stats -----------------------------------
