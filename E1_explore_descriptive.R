@@ -122,24 +122,26 @@ ggsave("results/ideology_by_ff49_boxplot.pdf", p_ff49_boxplot)
 
 t_descriptive_statistics_by_ff49_occupation <- contributors |> 
   group_by(sector_ff49, occupation) |> 
-  summarize(
+  summarise(
     sector_ff49 = sector_ff49,
     occupation = occupation,
     n = n(),
     mean_cfscore = mean(contributor.cfscore),
-    sd_cfscore = sd(contributor.cfscore)
+    sd_cfscore = sd(contributor.cfscore),
+    na.rm = TRUE
   ) |> 
   arrange(desc(n)) |> 
   collect()
 
 t_descriptive_statistics_by_ff49_occupation_smaller_20 <- contributors |> 
   group_by(sector_ff49, occupation) |> 
-  summarize(
+  summarise(
     sector_ff49 = sector_ff49,
     occupation = occupation,
     n = n(),
     mean_cfscore = mean(contributor.cfscore),
-    sd_cfscore = sd(contributor.cfscore)
+    sd_cfscore = sd(contributor.cfscore),
+    na.rm = TRUE
   ) |> 
   filter(
     n < 20
@@ -172,7 +174,8 @@ contributors |>
     occupation = occupation,
     n = n(),
     mean_cfscore = mean(contributor.cfscore),
-    sd_cfscore = sd(contributor.cfscore)
+    sd_cfscore = sd(contributor.cfscore),
+    na.rm = TRUE
   ) |> 
   filter(
     n < 20
