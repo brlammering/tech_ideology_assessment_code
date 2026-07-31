@@ -15,12 +15,22 @@ run_on_sample <- TRUE
 
 # execution of the files in order
 
+message("Running A1)")
+
 source("A1_get_contributors.R")
+
+message("Running A2)")
 
 source("A2_transform_to_parquet_contributors.r")
 
+message("Running A3)")
+
 source("A3_prep_contributors.r")
 
+message("Running E1)")
+
 source("E1_explore_descriptive.R")
+
+message("Running E2)")
 
 source("E2_inferential.R")

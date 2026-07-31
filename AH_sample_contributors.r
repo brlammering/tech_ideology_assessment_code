@@ -17,8 +17,8 @@ DIME_contributors <- open_dataset("data/raw/raw_contributors_parquet", format = 
 
 # Sample for faster compute when testing scripts in the future
 DIME_contributors_sample <- dbGetQuery(con, "
-  SELECT * FROM dime_contributors_1979_2024
-  USING SAMPLE 250000 ROWS (reservoir, 123)
+  SELECT * FROM raw_contributors_parquet
+ USING SAMPLE 250000 ROWS (reservoir, 123)
 ")
 
 DIME_contributors_sample |> count()
@@ -27,7 +27,6 @@ unlink("data/raw/raw_contributors_parquet_sample")
 
 # Write to a parquet file for further computing
 DIME_contributors_sample |>
-    to_arrow() |> 
     write_parquet("data/raw/raw_contributors_parquet_sample")
 
 # shutdown
