@@ -1,11 +1,11 @@
 # README
 
-Overview over the current state of the code in order to verify how to do model performance. Some comments on how this is constructed:
+Overview over the current state of the code of this Bachelors Thesis project. Some comments on how this is constructed:
 
 - Data has to be created from scratch by running main.r
 - In main.r, the flag `run_on_sample` tells A3, E1 and E2 whether to run on a sample of 250.000 or not. Default TRUE.
 - The scripts starting with AH are helper scripts containing functions used in A3. They are mostly written by Claude.
-- Comments on A3 are in the markdown [A3_NOTES_DIME_compute_QOIs.md](A3_NOTES_DIME_compute_QOIs.md), as are comments on E1 and E2 in [E_Notes.md](E_Notes.md)
+- Comments on methodological choices in A3 are in the markdown [A3_NOTES_DIME_compute_QOIs.md](A3_NOTES_DIME_compute_QOIs.md), as are comments on E1 and E2 in [E_Notes.md](E_Notes.md)
     - A3: There are multiple caveats in the construction of the database, e.g. the list for occupation regex isn't finished yet. See the markdown
     - E1: More or less complete, I honestly don't know what kind of descriptive analysis is needed more.
     - E2: incomplete and a total work in progress. My main focus right now is to produce meaningful analysis in line with the hypotheses right now.
