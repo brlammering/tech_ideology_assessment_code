@@ -69,6 +69,7 @@ dir.create("results", recursive = TRUE, showWarnings = FALSE)
 #                                TRUE ~ full_name),
 #          y = rep(c(-0.05, -0.1), times = 5))
 
+# Compare occupations ----------------------------------------------------
 
 
 # Compare industries -----------------------------------------------------
