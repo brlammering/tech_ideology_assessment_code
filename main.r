@@ -33,7 +33,7 @@ source("B1_get_contributions.R")
 
 message("Running B2)")
 
-source("B2_transform_to_parquet_contributions.r")
+source("B2_transform_to_parquet_contributions.R")
 
 message("Running B3)")
 
