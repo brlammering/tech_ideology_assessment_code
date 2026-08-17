@@ -1,11 +1,11 @@
 # README
 
-Overview over the current state of the code in order to verify how to do model performance. Some comments on how this is constructed:
+Overview over the current state of the code of this Bachelors Thesis project. Some comments on how this is constructed:
 
 - Data has to be created from scratch by running main.r
 - In main.r, the flag `run_on_sample` tells A3, E1 and E2 whether to run on a sample of 250.000 or not. Default TRUE.
 - The scripts starting with AH are helper scripts containing functions used in A3. They are mostly written by Claude.
-- Comments on A3 are in the markdown [A3_NOTES_DIME_compute_QOIs.md](A3_NOTES_DIME_compute_QOIs.md), as are comments on E1 and E2 in [E_Notes.md](E_Notes.md)
+- Comments on methodological choices in A3 are in the markdown [A3_NOTES_DIME_compute_QOIs.md](A3_NOTES_DIME_compute_QOIs.md), as are comments on E1 and E2 in [E_Notes.md](E_Notes.md)
     - A3: There are multiple caveats in the construction of the database, e.g. the list for occupation regex isn't finished yet. See the markdown
     - E1: More or less complete, I honestly don't know what kind of descriptive analysis is needed more.
     - E2: incomplete and a total work in progress. My main focus right now is to produce meaningful analysis in line with the hypotheses right now.
@@ -40,3 +40,4 @@ H6: "While the majority of tech employees became more liberal from Trump to Bide
     - => Mein Interesse wäre ja eigentlich auch nur als control variable, aber ich habe das noch nie gemacht! Ich müsste mich nochmal ein wenig einlesen - würde es auch gehen, multilevel modelle für zwei Zeitpunkte (2016 und 2024, theoretisch begründet) zu berechnen und diese zu vergleichen? Das wäre viel einfacher, da wir Multilevelmodelle im Kurs mehr behandelt haben und ich mich da auch ein bisschen mehr reingelesen habe.
 7. Wann wird overfitting zum Problem? In Bezug auf [m6 der Multilevelregressionsvergleiche](/E2_inferential.R)
 8. Soll ich so schreiben wie ein Paper (d.h. relativ kurz für Theorie, Methodik, Findings und die genauen Details zu computation von Variablen, tests und anderen methodischen Entscheidungen in einen Anhang), oder ist ein einziger Fließtext mit diesem Github als Code Repo am angebrachtesten? Derzeit schreibe ich letzteres.
+9. Wie ernst soll ich die Validierung / Robustness der Ergebnisse nehmen?
