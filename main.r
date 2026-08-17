@@ -7,7 +7,7 @@
 
 # change this flag to FALSE in order to compute the whole dataset. Tweak the memory settings in A3 before doing so, it might save a lot of time
 
-run_on_sample <- TRUE 
+run_on_sample <- FALSE
 
 # it might be good to create a function in order to see which of the
 # necessary files for the analysis are already created and which have
@@ -27,6 +27,18 @@ message("Running A3)")
 
 source("A3_prep_contributors.r")
 
+message("Running B1)")
+
+source("B1_get_contributions.R")
+
+message("Running B2)")
+
+source("B2_transform_to_parquet_contributions.r")
+
+message("Running B3)")
+
+source("B3_prep_contributions.r")
+
 message("Running E1)")
 
 source("E1_explore_descriptive.R")
@@ -34,3 +46,7 @@ source("E1_explore_descriptive.R")
 message("Running E2)")
 
 source("E2_inferential.R")
+
+message("Running E3")
+
+source("E3_reproduce_analysis.R")
