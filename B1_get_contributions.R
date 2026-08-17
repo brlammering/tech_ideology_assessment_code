@@ -1,4 +1,4 @@
-# A1_get_contributors.R
+# B1_get_contributions.R
 # creates and calls a function to get two databases from https://data.stanford.edu/dime 
 # saves it in /data/raw/
 
@@ -17,16 +17,16 @@ library(dplyr)
 #'
 #' @param data_dir Path to directory where data should be stored
 #' @param url URL to download from
-#' @param filename Name of the file to save (with extension)
+#' @param filename_csv.gz Name of the file to save (with extension)
 #'
 #' @return Invisibly returns TRUE
 #'
 download_data <- function(
-    data_dir = "data/raw",
+    data_dir = "data/raw/raw_contributions_csv",
     url,
-    filename) {
+    filename_csv.gz) {
   
-  file_path <- file.path(data_dir, filename)
+  file_path <- file.path(data_dir, filename_csv.gz)
 
   # Check if file already exists
   if (file.exists(file_path)) {
@@ -60,14 +60,12 @@ download_data <- function(
 
 # get the data from the website ------------------------------------------
 
-## download all contributors
-download_data(
-  url = "https://www.dropbox.com/scl/fi/c5z45dm2g8u9ihfi7uce8/dime_contributors_1979_2024.csv.gz?rlkey=janwvetndyxe4t8tm2v5a6wbu&dl=1",
-  filename = "dime_contributors_1979_2024.csv.gz"
-)
 
-# ## download all data from 2016
-# download_data(
-#   url = "https://www.dropbox.com/scl/fi/qg5vezrx876cmu7u9hehr/contribDB_2016.csv.gz?rlkey=dsl4htd0ovr8hyn7xwctel0a0&dl=1",
-#   filename = "contribDB_2016.csv.gz"
-# )
+source("BH_get_filenames.r")
+
+for(filename in filenames_list){
+  download_data(
+    url = url_list[filename],
+    filename_csv.gz = glue("{filename}.csv.gz")
+  )
+}
