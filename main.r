@@ -15,17 +15,17 @@ run_on_sample <- FALSE
 
 # execution of the files in order
 
-message("Running A1)")
+# message("Running A1)")
 
-source("A1_get_contributors.R")
+# source("A1_get_contributors.R")
 
-message("Running A2)")
+# message("Running A2)")
 
-source("A2_transform_to_parquet_contributors.r")
+# source("A2_transform_to_parquet_contributors.r")
 
-message("Running A3)")
+# message("Running A3)")
 
-source("A3_prep_contributors.r")
+# source("A3_prep_contributors.r")
 
 message("Running B1)")
 
@@ -39,14 +39,14 @@ message("Running B3)")
 
 source("B3_prep_contributions.r")
 
-message("Running E1)")
+# message("Running E1)")
 
-source("E1_explore_descriptive.R")
+# source("E1_explore_descriptive.R")
 
-message("Running E2)")
+# message("Running E2)")
 
-source("E2_inferential.R")
+# source("E2_inferential.R")
 
-message("Running E3")
+# message("Running E3")
 
-source("E3_reproduce_analysis.R")
+# source("E3_reproduce_analysis.R")

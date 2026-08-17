@@ -1,44 +1,72 @@
-# 02_convert.R
-# Convert raw CSV.gz files to parquet format with explicit column types
-# Uses TRY_CAST to handle malformed rows gracefully (returns NULL instead of crashing)
-# Decompresses CSV first to allow DuckDB to seek efficiently, then converts in chunks
+# B2_transform_to_parquet_contributions.R
+# Convert raw contribDB CSV.gz files to a Hive-partitioned parquet dataset.
+#
+# Layout written:  data/raw/raw_contributions_parquet/cycle=1980/contribDB_1980.parquet
+#
+# Design notes:
+#   - prepare_source() decompresses, normalises encoding only when needed, and
+#     strips end-of-line backslashes. Those backslashes are the real defect in
+#     DIME's export: they leave a quoted memo field unterminated, so DuckDB
+#     consumes to EOF looking for the closing quote and OOMs. Legitimate
+#     multi-line quoted fields are left intact for DuckDB to parse normally.
+#   - No LIMIT/OFFSET chunking. read_csv -> COPY is streaming; OFFSET over a
+#     CSV re-reads and discards rows, making the old loop quadratic. Worse, it
+#     masked the quote bug by treating a short batch as end-of-file.
+#   - No PARTITION_BY. DuckDB buffers per-partition writers in memory. Each
+#     source file is one cycle, so we write the cycle=NNNN/ directory ourselves.
+#   - Cycle comes from the filename, not from a scan. Verified after writing.
+#   - Completed cycles are skipped on re-run; see parquet_is_complete().
 
-# IDEA FOR ALL OF THE CONTRIBUTIONS: DOWNLOAD, UNPACK, CONVERT TO PARQUET, THEN DELETE THE DOWNLOADED 
-# AND UNPACKED FILE AND CONTINUE WITH THE NEXT - LIMIT DISK SPACE USE!!
-
-library(dbplyr)
 library(duckdb)
 library(glue)
-library(readr)
 
 # --- setup ------------------------------------------------------------------
 
-if(!dir.exists("data/raw/raw_contributions_parquet")){
-  dir.create("data/raw/raw_contributions_parquet",recursive = TRUE, showWarnings = FALSE)
+final_root    <- "data/raw/raw_contributions_parquet"
+spill_dir     <- "/var/tmp/duckdb_spill"   # off the project disk on purpose
+raw_dir       <- "data/raw/raw_contributions_csv"
+work_dir      <- "tmp"
+force_rebuild <- FALSE                     # TRUE to reconvert everything
+
+for (d in c(final_root, spill_dir, work_dir)) {
+  dir.create(d, recursive = TRUE, showWarnings = FALSE)
 }
 
-if(!dir.exists("tmp")){
-  dir.create("tmp", recursive = TRUE, showWarnings = FALSE)
-}
+con <- dbConnect(duckdb(
+  file.path(work_dir, paste0("convert_", format(Sys.time(), "%Y%m%d%H%M%S"), ".duckdb"))
+))
 
-# use a persistent duckdb file so internal state spills to disk, not RAM
-con <- dbConnect(duckdb(file.path("tmp", paste0("convert_", format(Sys.time(), "%Y%m%d%H%M%S"), ".duckdb"))))
-
-# memory management: limit usage, force spilling to disk, 8 thread
-dbExecute(con, "SET memory_limit = '8GB'")
-dbExecute(con, "SET temp_directory = 'tmp'")
+# memory_limit covers DuckDB's buffer manager only, not the R process,
+# ZSTD compression buffers, or the OS page cache
+dbExecute(con, "SET memory_limit = '4GB'")
+dbExecute(con, glue("SET temp_directory = '{spill_dir}'"))
 dbExecute(con, "PRAGMA threads = 1")
 dbExecute(con, "SET preserve_insertion_order = false")
 
-# --- helper: SELECT body with all casts -------------------------------------
+message("DuckDB version: ", dbGetQuery(con, "SELECT version()")[[1]])
 
-# returns the full COPY ... TO statement
-# limit_clause is injected as a string e.g. "LIMIT 10000" or "LIMIT 1000000 OFFSET 5000000"
-build_query <- function(csv_path, output_path, filename, limit_clause) {
+# --- shared CSV reader clause -----------------------------------------------
+
+# no escape= here: backslash-as-escape would turn the \N null marker into a
+# literal "N". Malformed rows are handled in prepare_source() instead.
+read_clause <- function(csv_path) {
+  glue(r"(read_csv('{csv_path}',
+                    all_varchar   = true,
+                    nullstr       = '\N',
+                    strict_mode   = false,
+                    null_padding  = true,
+                    parallel      = false,
+                    ignore_errors = true))")
+}
+
+# --- the full SELECT body ---------------------------------------------------
+
+# TRY_CAST on cycle, not ::BIGINT: a single torn row must not abort a 45-minute
+# conversion. Unparseable rows become NULL and are dropped by the WHERE.
+select_body <- function(csv_path) {
   glue(r"(
-    COPY (
       SELECT
-        cycle::BIGINT                                    AS cycle,
+        TRY_CAST(cycle AS BIGINT)                        AS cycle,
         "transaction.id"                                 AS "transaction.id",
         "transaction.type"                               AS "transaction.type",
         TRY_CAST(amount AS DOUBLE)                       AS amount,
@@ -64,10 +92,7 @@ build_query <- function(csv_path, output_path, filename, limit_clause) {
         "recipient.name"                                 AS "recipient.name",
         "bonica.rid"                                     AS "bonica.rid",
         "recipient.party"                                AS "recipient.party",
-        "recipient.type"                                 AS "occ.standardized",
-        "is.corp"                                        AS "is.corp",
-        "recipient.name"                                 AS "recipient.name",
-        "bonica.rid"                                     AS "recipient.type",
+        "recipient.type"                                 AS "recipient.type",
         "recipient.state"                                AS "recipient.state",
         seat                                             AS seat,
         "election.type"                                  AS "election.type",
@@ -86,154 +111,222 @@ build_query <- function(csv_path, output_path, filename, limit_clause) {
         TRY_CAST("excluded.from.scaling" AS BIGINT)      AS "excluded.from.scaling",
         TRY_CAST("contributor.cfscore" AS DOUBLE)        AS "contributor.cfscore",
         TRY_CAST("candidate.cfscore" AS DOUBLE)          AS "candidate.cfscore"
-      FROM read_csv('{csv_path}',
-                    all_varchar   = true,
-                    nullstr       = ['\N', ''],
-                    strict_mode   = false,
-                    null_padding  = true,
-                    parallel      = false,
-                    ignore_errors = true)
-      {limit_clause}
-    ) TO '{output_path}/{filename}.parquet' (FORMAT PARQUET)
+      FROM {read_clause(csv_path)}
+      WHERE TRY_CAST(cycle AS BIGINT) IS NOT NULL
   )")
 }
 
-# --- helper: decompress csv.gz ----------------------------------------------
-
-decompress <- function(gz_path) {
-  csv_path <- sub("\\.gz$", "", gz_path)
-  if (file.exists(csv_path)) {
-    message("Decompressed file already exists, skipping: ", csv_path)
-  } else {
-    message("Decompressing ", gz_path, "...")
-    system(glue("gunzip -k {gz_path}"))
-    message("✓ Decompressed to ", csv_path)
-  }
+build_query <- function(csv_path, out_file) {
+  glue(r"(
+    COPY (
+      {select_body(csv_path)}
+    ) TO '{out_file}'
+    (FORMAT PARQUET, COMPRESSION ZSTD)
+  )")
 }
 
-# --- helper: convert full csv in chunks via LIMIT/OFFSET --------------------
+# the expected schema, derived from select_body() itself so the completeness
+# check can never drift from what the script actually writes. Matches aliases
+# at end-of-line only, so the "AS DOUBLE" inside TRY_CAST(...) is not picked up.
+expected_cols <- local({
+  txt <- as.character(select_body("dummy"))
+  m   <- regmatches(txt, gregexpr('(?m)AS\\s+("[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\\s*(?=,\\s*$|\\s*$)',
+                                  txt, perl = TRUE))[[1]]
+  gsub('"', '', trimws(sub('^AS\\s+', '', m)))
+})
+stopifnot(length(expected_cols) == 45, "cycle" %in% expected_cols)
 
-convert_in_chunks <- function(csv_path, output_path, batch_size = 250000) {
+# --- helpers ----------------------------------------------------------------
 
-  offset    <- 0
-  batch_num <- 0
+# Is there already a usable parquet for this cycle? Checks, cheapest first:
+#   1. file exists and is non-trivially sized
+#   2. it opens - a COPY killed mid-write leaves no valid footer, and the
+#      footer is written last, so this alone catches most truncation
+#   3. schema matches expected_cols
+#   4. non-empty, and every row carries the expected cycle
+# Cannot detect a file that was written completely from truncated input; the
+# audit CSV is the defence against that.
+parquet_is_complete <- function(out_file, cyc, expected_cols) {
 
-  repeat {
-    message("Processing batch ", batch_num, " (rows ", offset, " to ", offset + batch_size, ")...")
+  if (!file.exists(out_file)) return(NULL)
 
-    rows_written <- dbExecute(con, build_query(
-      csv_path     = csv_path,
-      output_path  = output_path,
-      filename     = glue("batch_{offset}"),
-      limit_clause = glue("LIMIT {batch_size} OFFSET {offset}")
-    ))
-
-    if (rows_written == 0) {
-      message("No more rows, done.")
-      break
-    }
-
-    message("✓ batch_", offset, ".parquet written (", rows_written, " rows)")
-    offset    <- offset + batch_size
-    batch_num <- batch_num + 1
+  if (file.info(out_file)$size < 10000) {
+    message("  ! existing parquet suspiciously small - rebuilding")
+    return(NULL)
   }
 
-  # validate: count rows written
-  n_written <- dbGetQuery(con, glue("SELECT COUNT(*) FROM read_parquet('{output_path}/*.parquet')"))[[1]]
-  message("✓ Validation: ", n_written, " rows written to ", output_path)
-}
+  probe <- tryCatch({
+    cols  <- names(dbGetQuery(con, glue(
+      "SELECT * FROM read_parquet({shQuote(out_file)}) LIMIT 0")))
+    stats <- dbGetQuery(con, glue(
+      "SELECT COUNT(*) AS n,
+              COUNT(*) FILTER (WHERE cycle IS DISTINCT FROM {cyc}) AS n_wrong
+       FROM read_parquet({shQuote(out_file)})"))
+    list(cols = cols, n = stats$n, n_wrong = stats$n_wrong)
+  }, error = function(e) {
+    message("  ! existing parquet unreadable (", conditionMessage(e), ") - rebuilding")
+    NULL
+  })
 
+  if (is.null(probe)) return(NULL)
 
-# helper: clean encoding -------------------------------------------------
-
-# creates a seperate file with iconv so that duckdb loads the encoding correctly (it is very strict compared to, say, pandas or read.csv)
-
-clean_encoding <- function(csv_path, from_encoding = "latin1") {
-  csv_path_clean <- sub("\\.csv$", "_clean.csv", csv_path)
-  if (file.exists(csv_path_clean)) {
-    message("Cleaned file already exists, skipping: ", csv_path_clean)
-  } else {
-    message("Cleaning encoding (", from_encoding, " -> utf-8) for ", csv_path, "...")
-    system(glue('iconv -f {from_encoding} -t utf-8//IGNORE "{csv_path}" > "{csv_path_clean}"'))
-    message("✓ Cleaned file written to ", csv_path_clean)
+  missing <- setdiff(expected_cols, probe$cols)
+  if (length(missing)) {
+    message("  ! existing parquet missing ", length(missing), " column(s) (",
+            paste(head(missing, 3), collapse = ", "),
+            if (length(missing) > 3) ", ..." else "", ") - rebuilding")
+    return(NULL)
   }
-  csv_path_clean
+
+  if (probe$n == 0) {
+    message("  ! existing parquet has no rows - rebuilding")
+    return(NULL)
+  }
+
+  if (probe$n_wrong > 0) {
+    message("  ! existing parquet has ", probe$n_wrong,
+            " rows with cycle <> ", cyc, " - rebuilding")
+    return(NULL)
+  }
+
+  message("  skipping: complete parquet already present (", probe$n, " rows)")
+  probe$n
 }
 
+# decompress, normalise encoding, strip end-of-line backslashes.
+prepare_source <- function(gz_path, filename) {
+  csv_clean <- file.path(work_dir, paste0(filename, "_clean.csv"))
 
-# main -------------------------------------------------------------------
+  # Only transcode if the file is NOT already valid UTF-8. Running
+  # latin1 -> utf-8 over UTF-8 input double-encodes every non-ASCII byte,
+  # silently corrupting names and employer strings.
+  is_utf8 <- system(
+    glue("zcat {shQuote(gz_path)} | iconv -f utf-8 -t utf-8 > /dev/null 2>&1"),
+    ignore.stderr = TRUE) == 0
+
+  recode <- if (is_utf8) "cat" else "iconv -f latin1 -t utf-8//IGNORE"
+  message("  encoding: ", if (is_utf8) "valid utf-8, passing through"
+                          else "not utf-8, transcoding from latin1")
+
+  cmd <- glue(
+    "zcat {shQuote(gz_path)} ",
+    "| {recode} ",
+    "| sed 's/\\\\$//' ",
+    "> {shQuote(csv_clean)}"
+  )
+  if (system(cmd) != 0) stop("prepare_source pipeline failed for ", gz_path)
+
+  # physical lines, not records: multi-line quoted fields mean this is an
+  # upper bound on row count, useful only as a rough sanity reference
+  n_lines <- as.integer(system(glue("wc -l < {shQuote(csv_clean)}"), intern = TRUE)) - 1L
+  message("  prepared ", n_lines, " source lines")
+
+  list(path = csv_clean, n_lines = n_lines, transcoded = !is_utf8)
+}
+
+# cycle comes from the filename; verified against the data after writing
+cycle_from_filename <- function(filename) {
+  cyc <- suppressWarnings(as.integer(sub("^contribDB_", "", filename)))
+  stopifnot(!is.na(cyc), cyc >= 1979, cyc <= 2024)
+  cyc
+}
+
+# --- main -------------------------------------------------------------------
 
 source("BH_get_filenames.r")
 
-for(filename in filenames_list){
-  gz_path <- glue("data/raw/raw_contributions_csv/{filename}.csv.gz")
-  csv_path <- glue("data/raw/raw_contributions_csv/{filename}.csv")
-  out_path <- glue("data/raw/raw_contributions_parquet/{filename}")
+audit_log <- list()
 
-  if(!file.exists(gz_path) & !file.exists(csv_path)){
+for (filename in filenames_list) {
 
-    stop("File not found, please run B1 first to download the necessary files!")
+  gz_path <- glue("{raw_dir}/{filename}.csv.gz")
+  if (!file.exists(gz_path)) stop("File not found, run B1 first: ", gz_path)
 
-  } else {
+  cyc      <- cycle_from_filename(filename)
+  out_dir  <- file.path(final_root, paste0("cycle=", cyc))
+  out_file <- file.path(out_dir, paste0(filename, ".parquet"))
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-    print("File found, decompressing...")
+  message("Converting ", filename, " -> cycle=", cyc, "...")
 
-  }
-
-  decompress(gz_path)
-
-  conversion_ok <- TRUE
- 
-  tryCatch(
-    expr = {
-      convert_in_chunks(
-        csv_path    = csv_path,
-        output_path = out_path,
-        batch_size  = 250000
+  # resume: skip cycles already written completely
+  if (!force_rebuild) {
+    existing_n <- parquet_is_complete(out_file, cyc, expected_cols)
+    if (!is.null(existing_n)) {
+      audit_log[[filename]] <- data.frame(
+        file = filename, cycle = cyc, n_lines = NA_integer_,
+        transcoded = NA, n_written = existing_n, status = "skipped"
       )
-    },
-    error = function(e) {
-      message("✗ Conversion failed, likely an encoding issue: ", conditionMessage(e))
-      conversion_ok <- FALSE
+      next
     }
-  )
- 
-  if (!conversion_ok) {
- 
-    message("Retrying ", filename, " with cleaned encoding...")
- 
-    # wipe any partial batch_*.parquet files left over from the failed attempt,
-    # otherwise the retry's rows get appended on top of a half-finished output dir
-    unlink(out_path, recursive = TRUE)
- 
-    csv_path_clean <- clean_encoding(csv_path, from_encoding = "latin1")
- 
-    convert_in_chunks(
-      csv_path    = csv_path_clean,
-      output_path = out_path,
-      batch_size  = 250000
-    )
- 
-    message("Removing cleaned file...")
-    unlink(csv_path_clean)
-    message("✓ ", csv_path_clean, " removed")
   }
 
+  prepped <- prepare_source(gz_path, filename)
 
-  # remove decompressed csv to free disk space
-  message("Removing decompressed CSV...")
-  unlink(csv_path)
-  message("✓ ", csv_path, " removed")
+  ok <- tryCatch({
+    dbExecute(con, build_query(prepped$path, out_file))
+    TRUE
+  }, error = function(e) {
+    message("  x Conversion failed: ", conditionMessage(e))
+    FALSE
+  })
 
-  # # remove compressed csv.gz to free disk space
-  # message("Removing compressed csv.gz...")
-  # unlink(gz_path)
-  # message("✓ ", gz_path, " removed")
+  unlink(prepped$path)          # always: the decompressed CSV is large
+  if (!ok) {
+    unlink(out_file)            # no half-written parquet left behind
+    stop("Conversion failed for ", filename, " - see message above")
+  }
+
+  # the filename told us the cycle; confirm the data agrees
+  n_bad <- dbGetQuery(con, glue(
+    "SELECT COUNT(*) FROM read_parquet({shQuote(out_file)}) WHERE cycle <> {cyc}"))[[1]]
+  if (n_bad > 0) {
+    stop(n_bad, " rows in ", filename, " have a cycle other than ", cyc,
+         " - the one-cycle-per-file assumption does not hold")
+  }
+
+  n_rows <- dbGetQuery(con, glue(
+    "SELECT COUNT(*) FROM read_parquet({shQuote(out_file)})"))[[1]]
+  message("  ok ", filename, ": ", n_rows, " rows written")
+
+  audit_log[[filename]] <- data.frame(
+    file = filename, cycle = cyc, n_lines = prepped$n_lines,
+    transcoded = prepped$transcoded, n_written = n_rows, status = "converted"
+  )
+}
+
+# --- verification -----------------------------------------------------------
+
+# cycle is present both in the path and as a column in the file. DuckDB
+# resolves the collision by preferring the file column; if a future version
+# errors on the duplicate instead, drop cycle from select_body().
+hive_read <- glue(r"(read_parquet('{final_root}/**/*.parquet',
+                                  hive_partitioning = true,
+                                  hive_types = {{'cycle': 'BIGINT'}}))")
+
+message("\nPartition summary:")
+print(dbGetQuery(con, glue(
+  "SELECT cycle, COUNT(*) AS n_rows FROM {hive_read} GROUP BY cycle ORDER BY cycle")))
+
+# cycle must survive as BIGINT, not VARCHAR, or every downstream join breaks
+cycle_type <- dbGetQuery(con, glue(
+  "SELECT typeof(cycle) AS t FROM {hive_read} LIMIT 1"))$t
+stopifnot(cycle_type == "BIGINT")
+
+# conversion ledger - worth pasting into notes.md
+if (length(audit_log)) {
+  audit <- do.call(rbind, audit_log)
+  print(audit)
+  write.csv(audit, file.path(work_dir, "conversion_audit.csv"), row.names = FALSE)
+  file.copy(file.path(work_dir, "conversion_audit.csv"),
+            "data/raw/contributions_conversion_audit.csv", overwrite = TRUE)
+} else {
+  message("No files processed.")
 }
 
 # --- cleanup ----------------------------------------------------------------
 
 dbDisconnect(con, shutdown = TRUE)
-unlink("tmp", recursive = TRUE)
+unlink(work_dir, recursive = TRUE)
 
-message("Done. Files written to ", out_path)
+message("Done. Dataset written to ", final_root)

@@ -21,44 +21,49 @@ con <- dbConnect(duckdb("tmp/convert.duckdb"))
 dbExecute(con, "SET memory_limit = '2GB'")
 dbExecute(con, "SET max_temp_directory_size = '100GB'")
 
+target_cycles <- c(2016, 2020)
+needed <- sort(unique(c(target_cycles, target_cycles - 2)))
+
 # import the files
-import_files <- function(in_path, out_path, filename){
-  if(run_on_sample == TRUE) {
-    raw_sample_path <- glue("{in_path}_sample")
+if(run_on_sample == TRUE) {
+  # raw_sample_path <- glue("{in_path}_sample")
 
-    # create sample if it doesn't exist
-    if(!file.exists(raw_sample_path)){
-      source("BH_sample_contributions.r")
-      sample_contributions(raw_path = in_path, raw_sample_path = raw_sample_path)
-    }
+  # # create sample if it doesn't exist
+  # if(!file.exists(raw_sample_path)){
+  #   source("BH_sample_contributions.r")
+  #   sample_contributions(raw_path = in_path, raw_sample_path = raw_sample_path)
+  # }
 
-    # import sample 
-    DIME_contributions <- open_dataset(raw_sample_path, format = "parquet") |> 
-      to_duckdb(con, glue("raw_contributions_sample_{filename}"))
+  # # import sample 
+  # DIME_contributions <- open_dataset(raw_sample_path, format = "parquet") |> 
+  #   to_duckdb(con, glue("raw_contributions_sample_{filename}"))
 
-  } else if(run_on_sample == FALSE) {
+  stop("Sample not configured yet!")
 
-    DIME_contributions <- open_dataset(in_path, format = "parquet") |> 
-      to_duckdb(con, glue("raw_contributions_{filename}"))
+} else if(run_on_sample == FALSE) {
 
-  } else {
-    stop("Please specifiy if you want to run this script on a sample or on the full dataset by setting the flag run_on_sample =")
-  }
+  DIME_contributions <- tbl(con, "read_parquet('data/raw/raw_contributions_parquet/**/*.parquet',
+                  hive_partitioning = true,
+                  hive_types = {'cycle': 'BIGINT'})") |>
+    filter(cycle %in% !!needed)
 
-
-  # In order for gender to be translated correctly from duckdb to r
-  DIME_contributions <- DIME_contributions |> 
-    mutate(
-      contributor.gender = as.character(contributor.gender)  # dbplyr translates this to CAST(... AS VARCHAR)
-    ) |>
-    show_query()
-
-  DIME_contributions <- DIME_contributions |>
-    mutate(
-      contributor.gender = as.character(contributor.gender)  # dbplyr translates this to CAST(... AS VARCHAR)
-    ) |>
-    compute()
+} else {
+  stop("Please specifiy if you want to run this script on a sample or on the full dataset by setting the flag run_on_sample =")
 }
+
+
+# In order for gender to be translated correctly from duckdb to r
+DIME_contributions <- DIME_contributions |> 
+  mutate(
+    contributor.gender = as.character(contributor.gender)  # dbplyr translates this to CAST(... AS VARCHAR)
+  ) |>
+  show_query()
+
+DIME_contributions <- DIME_contributions |>
+  mutate(
+    contributor.gender = as.character(contributor.gender)  # dbplyr translates this to CAST(... AS VARCHAR)
+  ) |>
+  compute()
 
 
 # rename -----------------------------------------------------------------
@@ -67,17 +72,15 @@ import_files <- function(in_path, out_path, filename){
 
 # filter -----------------------------------------------------------------
 
-filter <- function(){
-  DIME_contributions <- DIME_contributions |>
-      filter(
-          contributor.type == "I",
-          !is.na(contributor.cfscore),
-          !is.na(most.recent.contributor.employer)
-      ) |> 
-      compute()
+DIME_contributions <- DIME_contributions |>
+    filter(
+        contributor.type == "I",
+        !is.na(contributor.cfscore),
+        !is.na(most.recent.contributor.employer)
+    ) |> 
+    compute()
 
-  DIME_contributions |> count() |> collect()
-}
+DIME_contributions |> count() |> collect()
 
 
 
@@ -89,61 +92,58 @@ filter <- function(){
 
 ## **Industry**
 
-industry <- function(){
+source("AH_SIC_lookup.R")
 
-  source("AH_SIC_lookup.R")
+# One-time only, before the first edgar_load() call:
+USER_AGENT <- "Bruno Lammering brunolammering@outlook.de"
 
-  # One-time only, before the first edgar_load() call:
-  USER_AGENT <- "Bruno Lammering brunolammering@outlook.de"
-
-  # Three lines. First call downloads + builds (or restores from backup);
-  # later calls just read the cached parquet.
-  edgar_profiles <- edgar_load(n_workers = 2, n_chunks = 100, duckdb_threads = 1)
-  matcher        <- edgar_matcher(edgar_profiles)
-  matched_companies <- edgar_match(
-    DIME_contributions |>
-      select(most.recent.contributor.employer) |>
-      filter(!is.na(most.recent.contributor.employer)) |> 
-      distinct() |>
-      collect() |>
-      deframe(),
-    matcher
-  )
-
-  # Optional but recommended after the first successful build -- snapshots
-  # profile_parts/ into backups/, so a future accidental rebuild recovers
-  # in seconds instead of hours.
-  edgar_backup()
-
-  # Attach SIC codes to the contributor table:
-
-
-  DIME_contributions <- DIME_contributions |>
-    left_join(matched_companies,
-              join_by(most.recent.contributor.employer == employer_raw),
-              copy = TRUE) |>
-    compute()
-
-  # Diagnostic: match coverage and review queue size.
+# Three lines. First call downloads + builds (or restores from backup);
+# later calls just read the cached parquet.
+edgar_profiles <- edgar_load(n_workers = 2, n_chunks = 100, duckdb_threads = 1)
+matcher        <- edgar_matcher(edgar_profiles)
+matched_companies <- edgar_match(
   DIME_contributions |>
-    count(status, match_type) |>
-    arrange(desc(n))
+    select(most.recent.contributor.employer) |>
+    filter(!is.na(most.recent.contributor.employer)) |> 
+    distinct() |>
+    collect() |>
+    deframe(),
+  matcher
+)
 
-  # Spot-check the highest-frequency needs_review rows before trusting the
-  # downstream industry classification -- especially the tech employers
-  # the analysis actually hinges on.
-  matched_companies |>
-    filter(status == "needs_review") |>
-    count(match_type, employer_raw, matched_name, sort = TRUE) |>
-    head(50)
+# Optional but recommended after the first successful build -- snapshots
+# profile_parts/ into backups/, so a future accidental rebuild recovers
+# in seconds instead of hours.
+edgar_backup()
+
+# Attach SIC codes to the contributor table:
 
 
-  # Drop the observations where there is no match or a needs_review match, because they usually don't fit either
+DIME_contributions <- DIME_contributions |>
+  left_join(matched_companies,
+            join_by(most.recent.contributor.employer == employer_raw),
+            copy = TRUE) |>
+  compute()
 
-  DIME_contributions <- DIME_contributions |> 
-    filter(status != "no_match" & status != "needs_review") |> 
-    collect()
-}
+# Diagnostic: match coverage and review queue size.
+DIME_contributions |>
+  count(status, match_type) |>
+  arrange(desc(n))
+
+# Spot-check the highest-frequency needs_review rows before trusting the
+# downstream industry classification -- especially the tech employers
+# the analysis actually hinges on.
+matched_companies |>
+  filter(status == "needs_review") |>
+  count(match_type, employer_raw, matched_name, sort = TRUE) |>
+  head(50)
+
+
+# Drop the observations where there is no match or a needs_review match, because they usually don't fit either
+
+DIME_contributions <- DIME_contributions |> 
+  filter(status != "no_match" & status != "needs_review") |> 
+  collect()
 
 # Tech Industry ----------------------------------------------------------
 
@@ -196,119 +196,76 @@ industry <- function(){
 
 # ff12, ff48, ff49
 
-tech_industry <- function(){
+source("AH_prep_fama_french_industry_matching.r")
 
-  source("AH_prep_fama_french_industry_matching.r")
+ff_sic_lookup <- read_csv("data/raw/sic/sic_ff_lookup.csv")
 
-  ff_sic_lookup <- read_csv("data/raw/sic/sic_ff_lookup.csv")
+ff_sic_lookup <- ff_sic_lookup |> 
+  filter(in_sec == TRUE)
 
-  ff_sic_lookup <- ff_sic_lookup |> 
-    filter(in_sec == TRUE)
-
-  DIME_contributions <- DIME_contributions |> left_join(sic_lookup, by = c("sic" = "sic"))
+DIME_contributions <- DIME_contributions |> left_join(sic_lookup, by = c("sic" = "sic"))
 
 
-  DIME_contributions <- DIME_contributions |> 
-      mutate(
-          ff49_is_tech = case_when(
-              ff49_abbr %in% c("Softw", "Hardw", "Chips") ~ TRUE, 
-              .default = FALSE
-          )
-      ) |> 
-      compute()
-}
+DIME_contributions <- DIME_contributions |> 
+    mutate(
+        ff49_is_tech = case_when(
+            ff49_abbr %in% c("Softw", "Hardw", "Chips") ~ TRUE, 
+            .default = FALSE
+        )
+    ) |> 
+    compute()
 
 
 ## **Occupation**
 
-occupation <- function(){
+source("AH_get_occupation_lists.r")
 
-  source("AH_get_occupation_lists.r")
+engineer_list <- get_engineer_list()
 
-  engineer_list <- get_engineer_list()
+engineer_regex <- paste(engineer_list, collapse = "|")
 
-  engineer_regex <- paste(engineer_list, collapse = "|")
+manager_list <- get_manager_list()
 
-  manager_list <- get_manager_list()
+manager_regex <- paste(manager_list, collapse = "|")
 
-  manager_regex <- paste(manager_list, collapse = "|")
+DIME_contributions <- DIME_contributions |>
+  mutate(
+    engineer = str_detect(`most.recent.contributor.occupation`, engineer_regex),
+    manager = str_detect(`most.recent.contributor.occupation`, manager_regex),
+    other = !engineer & !manager & !is.na(`most.recent.contributor.occupation`)
+  ) |> 
+  mutate(
+      occupation = case_when(
+          engineer == TRUE & manager == TRUE ~ "manager", # coding this as manager because it is the higher position (is it tho?)
+          engineer == TRUE & manager == FALSE ~ "engineer",
+          engineer == FALSE & manager == TRUE ~ "manager",
+          other == TRUE ~ "other",
+          .default = NA
+      ) |> as.character()
+  ) |> 
+  compute()
 
-  DIME_contributions <- DIME_contributions |>
-    mutate(
-      engineer = str_detect(`most.recent.contributor.occupation`, engineer_regex),
-      manager = str_detect(`most.recent.contributor.occupation`, manager_regex),
-      other = !engineer & !manager & !is.na(`most.recent.contributor.occupation`)
-    ) |> 
-    mutate(
-        occupation = case_when(
-            engineer == TRUE & manager == TRUE ~ "manager", # coding this as manager because it is the higher position (is it tho?)
-            engineer == TRUE & manager == FALSE ~ "engineer",
-            engineer == FALSE & manager == TRUE ~ "manager",
-            other == TRUE ~ "other",
-            .default = NA
-        ) |> as.character()
-    ) |> 
-    compute()
-
-  DIME_contributions |> 
-    count(occupation)
-
-  }
+DIME_contributions |> 
+  count(occupation)
 
 ## **Local ideological means**
 
-local_ideological_means <- function(){
-  NULL
-}
+
 
 
 # Dynamic cfscore means --------------------------------------------------
 
-dynamic_cfscore_means <- function(){
-  NULL
-}
-
-
 ## save data, disconnect from the db
 
-disconnect <- function(){
+if(run_on_sample == TRUE) {
 
-  if(run_on_sample == TRUE) {
+  DIME_contributions |> 
+    write_parquet(glue("{out_path}_sample"), chunk_size = 250000)
 
-    DIME_contributions |> 
-      write_parquet(glue("{out_path}_sample"), chunk_size = 250000)
-
-  } else if(run_on_sample == FALSE) {
-    
-    DIME_contributions |> 
-      write_parquet(out_path, chunk_size = 250000)
-
-  }
-
-}
-
-# main -------------------------------------------------------------------
-
-source("BH_get_filenames.r")
-
-for(filename in filenames_list){
-  in_path <- glue("data/raw/raw_contributions_parquet/{filename}")
-  out_path <- glue("data/analysis/processed_contributions_parquet/{filename}")
-
-  if(!dir.exists(out_path)){
-    dir.create(out_path, recursive = TRUE)
-  }
-
-  import_files(in_path, out_path, filename)
-  filter()
-  industry()
-  tech_industry()
-  occupation()
-  local_ideological_means()
-  dynamic_cfscore_means()
-  disconnect()
-}
-
+} else if(run_on_sample == FALSE) {
+  
+  DIME_contributions |> 
+    write_parquet(out_path, chunk_size = 250000)
 
 
 # shutdown
