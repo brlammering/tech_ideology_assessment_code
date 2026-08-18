@@ -86,8 +86,8 @@ edgar_profiles <- edgar_load(n_workers = 2, n_chunks = 100, duckdb_threads = 1)
 matcher        <- edgar_matcher(edgar_profiles)
 matched_companies <- edgar_match(
   DIME_contributions |>
-    select(most.recent.contributor.employer) |>
-    filter(!is.na(most.recent.contributor.employer)) |> 
+    select(contributor.employer) |>
+    filter(!is.na(contributor.employer)) |> 
     distinct() |>
     collect() |>
     deframe(),
@@ -104,7 +104,7 @@ edgar_backup()
 
 DIME_contributions <- DIME_contributions |>
   left_join(matched_companies,
-            join_by(most.recent.contributor.employer == employer_raw),
+            join_by(contributor.employer == employer_raw),
             copy = TRUE) |>
   compute()
 
@@ -213,9 +213,9 @@ manager_regex <- paste(manager_list, collapse = "|")
 
 DIME_contributions <- DIME_contributions |>
   mutate(
-    engineer = str_detect(`most.recent.contributor.occupation`, engineer_regex),
-    manager = str_detect(`most.recent.contributor.occupation`, manager_regex),
-    other = !engineer & !manager & !is.na(`most.recent.contributor.occupation`)
+    engineer = str_detect(`contributor.occupation`, engineer_regex),
+    manager = str_detect(`contributor.occupation`, manager_regex),
+    other = !engineer & !manager & !is.na(`contributor.occupation`)
   ) |> 
   mutate(
       occupation = case_when(
