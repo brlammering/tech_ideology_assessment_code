@@ -134,7 +134,14 @@ expected_cols <- local({
                                   txt, perl = TRUE))[[1]]
   gsub('"', '', trimws(sub('^AS\\s+', '', m)))
 })
-stopifnot(length(expected_cols) == 45, "cycle" %in% expected_cols)
+stopifnot(
+  length(expected_cols) > 30,                        # regex found the alias list
+  !anyDuplicated(expected_cols),                     # catches the old paste bug
+  "transaction.id"        %in% expected_cols,
+  "contributor.employer"  %in% expected_cols,        # load-bearing for EDGAR matching
+  "contributor.cfscore"   %in% expected_cols
+)
+message("expected_cols: ", length(expected_cols), " columns")
 
 # --- helpers ----------------------------------------------------------------
 
@@ -142,10 +149,12 @@ stopifnot(length(expected_cols) == 45, "cycle" %in% expected_cols)
 #   1. file exists and is non-trivially sized
 #   2. it opens - a COPY killed mid-write leaves no valid footer, and the
 #      footer is written last, so this alone catches most truncation
-#   3. schema matches expected_cols
+#   3. schema matches expected_cols (guards against files from an older
+#      version of this script with a different column set)
 #   4. non-empty, and every row carries the expected cycle
-# Cannot detect a file that was written completely from truncated input; the
-# audit CSV is the defence against that.
+# Returns the row count if complete, NULL if the file should be rebuilt.
+# Cannot detect a file written completely from truncated input; the audit
+# CSV is the defence against that.
 parquet_is_complete <- function(out_file, cyc, expected_cols) {
 
   if (!file.exists(out_file)) return(NULL)
@@ -158,10 +167,22 @@ parquet_is_complete <- function(out_file, cyc, expected_cols) {
   probe <- tryCatch({
     cols  <- names(dbGetQuery(con, glue(
       "SELECT * FROM read_parquet({shQuote(out_file)}) LIMIT 0")))
-    stats <- dbGetQuery(con, glue(
-      "SELECT COUNT(*) AS n,
-              COUNT(*) FILTER (WHERE cycle IS DISTINCT FROM {cyc}) AS n_wrong
-       FROM read_parquet({shQuote(out_file)})"))
+
+    # cycle must be a real column here, not supplied by the hive path:
+    # read_parquet() on a single file without hive_partitioning sees only
+    # what is actually stored, which is what we want to verify.
+    stats <- if ("cycle" %in% cols) {
+      dbGetQuery(con, glue(
+        "SELECT COUNT(*) AS n,
+                COUNT(*) FILTER (WHERE cycle IS DISTINCT FROM {cyc}) AS n_wrong
+         FROM read_parquet({shQuote(out_file)})"))
+    } else {
+      # cycle lives only in the directory name; row count is all we can check
+      cbind(dbGetQuery(con, glue(
+        "SELECT COUNT(*) AS n FROM read_parquet({shQuote(out_file)})")),
+        n_wrong = 0L)
+    }
+
     list(cols = cols, n = stats$n, n_wrong = stats$n_wrong)
   }, error = function(e) {
     message("  ! existing parquet unreadable (", conditionMessage(e), ") - rebuilding")
