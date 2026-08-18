@@ -93,7 +93,7 @@ edgar_load <- function(root = EDGAR_ROOT,
                        n_chunks            = 100L,
                        duckdb_memory_limit = "1GB",
                        duckdb_threads      = 2L,
-                       force_rebuild       = TRUE) { # that makes it ignore the cache for rebuild
+                       force_rebuild       = FALSE) { # that makes it ignore the cache for rebuild
   p <- edgar_paths(root)
 
   built_ok <- .edgar_parts_look_valid(p)

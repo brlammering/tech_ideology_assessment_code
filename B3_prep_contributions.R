@@ -21,68 +21,51 @@ con <- dbConnect(duckdb("tmp/convert.duckdb"))
 dbExecute(con, "SET memory_limit = '2GB'")
 dbExecute(con, "SET max_temp_directory_size = '100GB'")
 
-target_cycles <- c(2016, 2020)
+target_cycles <- c(2016, 2020, 2024)
 needed <- sort(unique(c(target_cycles, target_cycles - 2)))
+final_root <- "data/raw/raw_contributions_parquet"
 
 # import the files
-if(run_on_sample == TRUE) {
-  # raw_sample_path <- glue("{in_path}_sample")
 
-  # # create sample if it doesn't exist
-  # if(!file.exists(raw_sample_path)){
-  #   source("BH_sample_contributions.r")
-  #   sample_contributions(raw_path = in_path, raw_sample_path = raw_sample_path)
-  # }
+stopifnot(is.logical(run_on_sample), length(run_on_sample) == 1, !is.na(run_on_sample))
 
-  # # import sample 
-  # DIME_contributions <- open_dataset(raw_sample_path, format = "parquet") |> 
-  #   to_duckdb(con, glue("raw_contributions_sample_{filename}"))
+dbExecute(con, glue("
+  CREATE OR REPLACE VIEW contribs_raw AS
+  SELECT * FROM read_parquet('{final_root}/**/*.parquet',
+                             hive_partitioning = true,
+                             hive_types = {{'cycle': 'BIGINT'}})"))
 
-  stop("Sample not configured yet!")
+DIME_contributions <- tbl(con, "contribs_raw") |>
+  filter(cycle %in% !!needed)
 
-} else if(run_on_sample == FALSE) {
+if (run_on_sample) {
+  
+  sample_ids <- tbl(con, "contribs_raw") |>
+    filter(cycle %in% !!needed) |>
+    distinct(bonica.cid) |>
+    slice_sample(n = 5000) |>
+    compute()
 
-  DIME_contributions <- tbl(con, "read_parquet('data/raw/raw_contributions_parquet/**/*.parquet',
-                  hive_partitioning = true,
-                  hive_types = {'cycle': 'BIGINT'})") |>
-    filter(cycle %in% !!needed)
+  DIME_contributions <- tbl(con, "contribs_raw") |>
+    filter(cycle %in% !!needed) |>
+    semi_join(sample_ids, by = "bonica.cid")
 
-} else {
-  stop("Please specifiy if you want to run this script on a sample or on the full dataset by setting the flag run_on_sample =")
 }
 
 
-# In order for gender to be translated correctly from duckdb to r
-DIME_contributions <- DIME_contributions |> 
-  mutate(
-    contributor.gender = as.character(contributor.gender)  # dbplyr translates this to CAST(... AS VARCHAR)
-  ) |>
-  show_query()
-
-DIME_contributions <- DIME_contributions |>
-  mutate(
-    contributor.gender = as.character(contributor.gender)  # dbplyr translates this to CAST(... AS VARCHAR)
-  ) |>
-  compute()
-
-
-# rename -----------------------------------------------------------------
-
-
+# # In order for gender to be translated correctly from duckdb to r
+# DIME_contributions <- DIME_contributions |> 
+#   mutate(
+#     contributor.gender = as.character(contributor.gender)  # dbplyr translates this to CAST(... AS VARCHAR)
+#   ) |>
+#   show_query()
 
 # filter -----------------------------------------------------------------
 
 DIME_contributions <- DIME_contributions |>
     filter(
-        contributor.type == "I",
-        !is.na(contributor.cfscore),
-        !is.na(most.recent.contributor.employer)
-    ) |> 
-    compute()
-
-DIME_contributions |> count() |> collect()
-
-
+        contributor.type == "I"
+    )
 
 # **Firms** ABANDONED ----------------------------------------------------
 
@@ -97,7 +80,7 @@ source("AH_SIC_lookup.R")
 # One-time only, before the first edgar_load() call:
 USER_AGENT <- "Bruno Lammering brunolammering@outlook.de"
 
-# Three lines. First call downloads + builds (or restores from backup);
+# First call downloads + builds (or restores from backup);
 # later calls just read the cached parquet.
 edgar_profiles <- edgar_load(n_workers = 2, n_chunks = 100, duckdb_threads = 1)
 matcher        <- edgar_matcher(edgar_profiles)
@@ -266,7 +249,7 @@ if(run_on_sample == TRUE) {
   
   DIME_contributions |> 
     write_parquet(out_path, chunk_size = 250000)
-
+}
 
 # shutdown
 dbDisconnect(con)

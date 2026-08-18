@@ -64,14 +64,10 @@ DIME_contributors |> colnames()
 
 DIME_contributors <- DIME_contributors |>
     filter(
-        contributor.type == "I",
-        !is.na(contributor.cfscore),
-        !is.na(most.recent.contributor.employer)
-    ) |> 
-    compute()
+        contributor.type == "I"
+    )
 
 DIME_contributors |> count() |> collect()
-
 
 
 

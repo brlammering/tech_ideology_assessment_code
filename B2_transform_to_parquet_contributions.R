@@ -63,10 +63,10 @@ read_clause <- function(csv_path) {
 
 # TRY_CAST on cycle, not ::BIGINT: a single torn row must not abort a 45-minute
 # conversion. Unparseable rows become NULL and are dropped by the WHERE.
+# Dropped cycle because it is already indicated in the hive partitioning
 select_body <- function(csv_path) {
   glue(r"(
       SELECT
-        TRY_CAST(cycle AS BIGINT)                        AS cycle,
         "transaction.id"                                 AS "transaction.id",
         "transaction.type"                               AS "transaction.type",
         TRY_CAST(amount AS DOUBLE)                       AS amount,
