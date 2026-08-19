@@ -181,26 +181,21 @@ edgar_matcher <- function(edgar_profiles) {
     distinct(.ref_norm, .keep_all = TRUE)
 
   message("Building matcher over ", nrow(ref), " EDGAR filers with SIC codes...")
-  prefix_env <- .build_prefix_index(ref$.ref_norm)
 
   structure(
-    list(ref = ref, ref_norm = ref$.ref_norm, prefix_env = prefix_env),
+    list(ref = ref, ref_norm = ref$.ref_norm),
     class = "edgar_matcher"
   )
 }
 
 #' Fuzzy-match employer strings against a matcher
 #'
-#' Three-tier: exact -> prefix -> fuzzy. Each tier only handles what the
+#' Three-tier: exact -> fuzzy. Each tier only handles what the
 #' previous couldn't:
 #'   exact  : normalized string identical to a reference name (near-free)
-#'   prefix : query trims trailing words until it hits a reference prefix
-#'            (catches "Google Internet Services" -> "Google LLC" and
-#'            short-vs-long mismatches in either direction). Flagged as
-#'            needs_review since prefix hits are less certain than exact.
 #'   fuzzy  : multithreaded Jaro-Winkler for genuine typos.
 #'
-#' Prefix and fuzzy hits with distance > loose_dist are reported as
+#' Fuzzy hits with distance > loose_dist are reported as
 #' no_match rather than forced into a low-confidence assignment.
 #'
 #' ALWAYS spot-check the needs_review rows before treating them as
@@ -213,7 +208,7 @@ edgar_matcher <- function(edgar_profiles) {
 #' @param loose_dist  auto-flag between strict_dist and this (default 0.15)
 #' @return tibble with one row per input string, containing: employer_raw,
 #'   matched_name, sic, sic_description, distance, tokens_dropped,
-#'   match_type (exact / prefix / fuzzy / none),
+#'   match_type (exact / fuzzy / none),
 #'   status (auto_accept / needs_review / no_match)
 edgar_match <- function(employer_strings,
                         matcher,
@@ -224,7 +219,6 @@ edgar_match <- function(employer_strings,
 
   ref        <- matcher$ref
   ref_norm   <- matcher$ref_norm
-  prefix_env <- matcher$prefix_env
 
   distinct_raw <- unique(employer_strings)
   query_norm   <- .normalize_name(distinct_raw)
@@ -232,19 +226,9 @@ edgar_match <- function(employer_strings,
   # Tier 1: exact
   exact_idx <- match(query_norm, ref_norm)
 
-  # Tier 2: prefix (only for what tier 1 didn't get)
-  prefix_idx     <- rep(NA_integer_, length(query_norm))
-  prefix_dropped <- rep(NA_integer_, length(query_norm))
-  need_prefix <- which(is.na(exact_idx) & query_norm != "")
-  if (length(need_prefix) > 0) {
-    res <- lapply(query_norm[need_prefix], .prefix_lookup_one, env = prefix_env)
-    prefix_idx[need_prefix]     <- vapply(res, `[[`, integer(1), "idx")
-    prefix_dropped[need_prefix] <- vapply(res, `[[`, integer(1), "dropped")
-  }
-
-  # Tier 3: fuzzy (only for what tiers 1-2 didn't get)
+  # Tier 2: fuzzy (only for what tiers 1-2 didn't get)
   fuzzy_idx <- rep(NA_integer_, length(query_norm))
-  need_fuzzy <- which(is.na(exact_idx) & is.na(prefix_idx) & query_norm != "")
+  need_fuzzy <- which(is.na(exact_idx) & query_norm != "")
   if (length(need_fuzzy) > 0) {
     fuzzy_idx[need_fuzzy] <- amatch(query_norm[need_fuzzy], ref_norm,
                                     method = "jw", maxDist = loose_dist,
@@ -253,14 +237,12 @@ edgar_match <- function(employer_strings,
 
   match_type <- case_when(
     !is.na(exact_idx)  ~ "exact",
-    !is.na(prefix_idx) ~ "prefix",
     !is.na(fuzzy_idx)  ~ "fuzzy",
     TRUE               ~ "none"
   )
-  best_idx <- dplyr::coalesce(exact_idx, prefix_idx, fuzzy_idx)
+  best_idx <- dplyr::coalesce(exact_idx, fuzzy_idx)
 
-  # Distances: 0 for exact, NA for prefix (a word-count-based signal
-  # lives in tokens_dropped instead), computed for fuzzy hits.
+  # Distances: 0 for exact, computed for fuzzy hits.
   distance <- rep(NA_real_, length(query_norm))
   distance[match_type == "exact"] <- 0
   fz <- which(match_type == "fuzzy")
@@ -270,7 +252,6 @@ edgar_match <- function(employer_strings,
   }
 
   message(sum(match_type == "exact"),  " exact / ",
-          sum(match_type == "prefix"), " prefix / ",
           sum(match_type == "fuzzy"),  " fuzzy / ",
           sum(match_type == "none"),   " unmatched",
           " (", length(query_norm), " distinct strings)")
@@ -279,13 +260,11 @@ edgar_match <- function(employer_strings,
     employer_raw   = distinct_raw,
     .ref_idx       = best_idx,
     distance       = distance,
-    tokens_dropped = prefix_dropped,
     match_type     = match_type
   ) |>
     mutate(status = case_when(
       match_type == "none"                             ~ "no_match",
       match_type == "exact"                             ~ "auto_accept",
-      match_type == "prefix"                            ~ "needs_review",
       match_type == "fuzzy" & distance <= strict_dist   ~ "auto_accept",
       match_type == "fuzzy" & distance <= loose_dist    ~ "needs_review",
       TRUE                                              ~ "no_match"
@@ -684,57 +663,6 @@ edgar_match <- function(employer_strings,
     ) |>
     str_squish()
 }
-  
-# Stopwords that are too generic to accept as a lone prefix match if
-# everything else got trimmed away. E.g. "First National Bank of Ohio"
-# shouldn't collapse to "first".
-.PREFIX_STOPWORDS <- c(
-  "the","first","second","national","general","american","united","global",
-  "group","holdings","worldwide","international","technologies","systems",
-  "solutions","enterprises","industries","partners","associates","consulting",
-  "services","internet","media","capital"
-)
-
-# Index every left-anchored word prefix of every reference name into a
-# hashed environment for O(1) lookup. First reference to claim a given
-# prefix wins ties -- the EDGAR file is in roughly registration order,
-# which biases toward earlier / larger filers, an acceptable heuristic
-# for a thesis-scale job.
-.build_prefix_index <- function(ref_norm) {
-  tok_list <- str_split(ref_norm, " ")
-  keys <- vector("list", length(tok_list))
-  idxs <- vector("list", length(tok_list))
-  for (i in seq_along(tok_list)) {
-    toks <- tok_list[[i]]; toks <- toks[toks != ""]
-    if (length(toks) == 0) next
-    keys[[i]] <- vapply(seq_along(toks),
-                        function(k) paste(toks[1:k], collapse = " "),
-                        character(1))
-    idxs[[i]] <- rep(i, length(toks))
-  }
-  all_keys <- unlist(keys, use.names = FALSE)
-  all_idx  <- unlist(idxs, use.names = FALSE)
-  keep <- !duplicated(all_keys)
-  list2env(setNames(as.list(all_idx[keep]), all_keys[keep]), hash = TRUE)
-}
-
-# Trim tokens off the end of `q` until a prefix hits in the index.
-# Returns the matched reference index and how many tokens were dropped
-# (used as the confidence signal for prefix-match results).
-.prefix_lookup_one <- function(q, env) {
-  if (q == "") return(list(idx = NA_integer_, dropped = NA_integer_))
-  toks <- str_split(q, " ")[[1]]; toks <- toks[toks != ""]
-  n <- length(toks)
-  for (k in n:1) {
-    if (k == 1 && toks[1] %in% .PREFIX_STOPWORDS) next
-    cand <- paste(toks[1:k], collapse = " ")
-    if (exists(cand, envir = env, inherits = FALSE)) {
-      return(list(idx = get(cand, envir = env, inherits = FALSE),
-                  dropped = n - k))
-    }
-  }
-  list(idx = NA_integer_, dropped = NA_integer_)
-}
 
 # =============================================================================
 # DESIGN NOTES (why the pipeline looks the way it does)
@@ -813,14 +741,11 @@ edgar_match <- function(employer_strings,
 # so recovery from an accidental force_rebuild or `rm -rf` costs a
 # copy rather than a full multi-hour rebuild.
 #
-# FUZZY MATCHER: BUILD ONCE. Deduplicating ~800k reference names and
-# indexing every word-prefix is the expensive step. edgar_matcher()
+# FUZZY MATCHER: BUILD ONCE. Deduplicating ~800k reference names
+# is the expensive step. edgar_matcher()
 # does it once; edgar_match() reuses the returned object across as
 # many batches as you want.
 #
 # THREE-TIER MATCH. Exact match handles the near-free majority.
-# Prefix match handles trailing-word mismatches Jaro-Winkler can't
-# ("Google Internet Services" vs "Google LLC" is 3 whole tokens
-# different -- way outside any sane JW threshold). JW handles typos
-# and light transpositions on what's left. Ordering by cost also
+# JW handles typos and light transpositions on what's left. Ordering by cost also
 # means the expensive amatch() only runs on the small residual set.
