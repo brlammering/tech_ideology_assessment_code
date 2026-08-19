@@ -212,8 +212,8 @@ edgar_matcher <- function(edgar_profiles) {
 #'   status (auto_accept / needs_review / no_match)
 edgar_match <- function(employer_strings,
                         matcher,
-                        strict_dist = 0.06,
-                        loose_dist  = 0.15,
+                        strict_dist = 0.02,
+                        loose_dist  = 0.06,
                         nthread     = max(1L, parallel::detectCores() - 1L)) {
   stopifnot(inherits(matcher, "edgar_matcher"), loose_dist >= strict_dist)
 

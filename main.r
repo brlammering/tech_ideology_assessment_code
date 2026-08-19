@@ -7,7 +7,7 @@
 
 # change this flag to FALSE in order to compute the whole dataset. Tweak the memory settings in A3 before doing so, it might save a lot of time
 
-run_on_sample <- FALSE
+run_on_sample <- TRUE
 
 # it might be good to create a function in order to see which of the
 # necessary files for the analysis are already created and which have
