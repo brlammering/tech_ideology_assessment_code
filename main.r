@@ -37,7 +37,7 @@ source("B2_transform_to_parquet_contributions.R")
 
 message("Running B3)")
 
-source("B3_prep_contributions.r")
+source("B3_prep_contributions.R")
 
 # message("Running E1)")
 
