@@ -121,8 +121,12 @@ matched_companies |>
   count(match_type, employer_raw, matched_name, sort = TRUE) |>
   head(50)
 
+DIME_contributions |> 
+  filter(status == "needs_review") |> 
+  count(contributor.employer, matched_name, sort = TRUE) |> 
+  head(50)
 
-# Drop the observations where there is no match or a needs_review match, because they usually don't fit either
+# Drop the observations where there is no match or a needs_review match, because they usually don't fit
 
 DIME_contributions <- DIME_contributions |> 
   filter(status != "no_match" & status != "needs_review") |> 
@@ -231,14 +235,130 @@ DIME_contributions <- DIME_contributions |>
 DIME_contributions |> 
   count(occupation)
 
-## **Local ideological means**
+# Local ideological means ------------------------------------------------
 
 
+tbl_mean_cfscore_per_city <- DIME_contributions |> 
+    group_by(contributor.city) |> 
+    summarise(
+        mean_cfscore_per_city = mean(contributor.cfscore)
+    ) |> 
+    select(contributor.city, mean_cfscore_per_city)
 
+tbl_mean_cfscore_per_zipcode <- DIME_contributions |> 
+    group_by(contributor.zipcode) |> 
+    summarise(
+        mean_cfscore_per_zipcode = mean(contributor.cfscore)
+    ) |> 
+    select(contributor.zipcode, mean_cfscore_per_zipcode)
+
+DIME_contributions <- DIME_contributions |> 
+    left_join(tbl_mean_cfscore_per_city, by = "contributor.city") |> 
+    left_join(tbl_mean_cfscore_per_zipcode, by = "contributor.zipcode") |> 
+    compute()
 
 # Dynamic cfscore means --------------------------------------------------
 
+# get static candidate CFScores
+
+# candidate_cfscores <- DIME_contributions |>
+#   select(cycle, bonica.rid, candidate.cfscore) |>
+#   filter(!is.na(candidate.cfscore)) |>
+#   select(bonica.rid, candidate.cfscore) |>
+#   distinct()
+
+# DON'T NEED IT BECAUSE I CAN DIRECTLY USE THE CFSCORES FROM THE THING
+
+# # exclude corporations, labor unions, and trade associations
+
+# exclude <- cands |>
+#   filter(igcat %in% c("C", "L", "T"), recipient.type == "comm") |>
+#   select(bonica.rid, cycle) |>
+#   distinct() |>
+#   mutate(exclude = 1)
+
+# => STEEL DOES THIS, I CAN'T DO IT HERE BECAUSE I DON'T USE THE RECIPIENT DATABASE (I COULD, I DON'T DO IT YET, IT IS EASIER THIS WAY)
+
+dyn_cf_matcher <- DIME_contributions |> 
+  mutate(cycle = cycle + 2) |>
+  union_all(DIME_contributions) |> 
+  mutate(amount = as.numeric(amount),
+         amount_normalized = case_when(
+           amount <= 0 ~ 0,
+           amount > 0 & amount < 5000 ~ ceiling(amount / 100),
+           amount >= 5000 ~ 50
+         )) |> 
+  select(amount_normalized, bonica.cid, cycle, transaction.type, transaction.id, bonica.rid, candidate.cfscore) |> 
+  compute()
+
+error <- dyn_cf_matcher |> 
+  count(transaction.id) |> 
+  filter(n != 2) |> 
+  collect()
+
+stopifnot(nrow(error) == 0)
+
+indiv_by_cycle_init <- dyn_cf_matcher |> 
+  filter(!is.na(bonica.cid), !is.na(candidate.cfscore), !is.na(amount_normalized), amount_normalized > 0,
+         transaction.type %in% c("15", "15E", "15J", "15S", "15L", "24E", "24P")) |> 
+  group_by(bonica.cid, cycle) |> 
+  mutate(tot_cycle = sum(amount_normalized, na.rm = T)) |>
+  ungroup() |>
+  mutate(prop_of_total = amount_normalized / tot_cycle,
+         cfscore_times_prop = candidate.cfscore * prop_of_total) |>
+  group_by(bonica.cid, cycle) |>
+  summarize(cfscore_dyn_cycle = sum(cfscore_times_prop, na.rm = T)) |>
+  ungroup()
+
+DIME_contributions <- DIME_contributions |>
+  filter(bonica.cid %in% indiv_by_cycle_init$bonica.cid) |> # why filter here?
+  left_join(indiv_by_cycle_init, join_by(bonica.cid, cycle))
+
+# contributions_panel_of <- DIME_contributions |>
+#  # filter(bonica.cid %in% indiv_by_cycle_init$bonica.cid) |>
+#   left_join(indiv_by_cycle_init, join_by(bonica.cid, cycle))
+
+############################################################################################# STEEL HERE
+
+# # linearly interpolate missing scores
+
+# the_panel <- top4000_panel_usa |>
+#   filter(!is.na(cfscore_weighted_avg)) |>
+#   mutate(longtime_donor = if_else(DirectorID %in% longtime_donors$DirectorID, 1, 0))
+
+# indiv_by_cycle_interpolated <- tibble(DirectorID = unique(sort(the_panel$DirectorID))) |>
+#   cross_join(tibble(cycle = seq(1982, 2022, by = 2))) |>
+#   left_join(indiv_by_cycle_init) |>
+#   group_by(DirectorID) |>
+#   arrange(cycle, .by_group = TRUE) |>
+#   mutate(cfscore_dyn = if (all(is.na(cfscore_dyn_cycle))) {
+#     NA_real_  # if all values are NA, keep as NA
+#   } else if (sum(!is.na(cfscore_dyn_cycle)) == 1) {
+#     first(na.omit(cfscore_dyn_cycle))  # if only one value, replicate it
+#   } else {
+#     approx(
+#       x = cycle, 
+#       y = cfscore_dyn_cycle, 
+#       xout = cycle, 
+#       rule = 2
+#     )$y  # standard interpolation
+#   }) |>
+#   ungroup() |>
+#   filter(!is.na(cfscore_dyn)) |>
+#   select(-cfscore_dyn_cycle)
+
+# # add dynamic scores to panel
+
+# the_panel <- the_panel |>
+#   filter(DirectorID %in% indiv_by_cycle_interpolated$DirectorID) |>
+#   mutate(cycle = if_else(year %% 2 == 0, year, year + 1)) |>
+#   left_join(indiv_by_cycle_interpolated)
+
+#############################################################################################
+
 ## save data, disconnect from the db
+
+out_path <- "data/analysis/processed_contributions_parquet"
 
 if(run_on_sample == TRUE) {
 

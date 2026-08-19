@@ -28,10 +28,17 @@ if(run_on_sample == TRUE) {
   # import sample 
   contributors <- open_dataset("data/analysis/processed_contributors_parquet_sample", format = "parquet") |> 
     to_duckdb(con, "processed_contributors_parquet_sample")
+
+  contributions <- open_dataset("data/analysis/processed_contributions_parquet_sample", format = "parquet") |> 
+    to_duckdb(con, "processed_contributions_parquet_sample")
+
 } else if(run_on_sample == FALSE) {
   # import full dataset
   contributors <- open_dataset("data/analysis/processed_contributors_parquet", format = "parquet") |> 
     to_duckdb(con, "processed_contributors_parquet")
+
+  contributions <- open_dataset("data/analysis/processed_contributions_parquet", format = "parquet") |> 
+    to_duckdb(con, "processed_contributions_parquet")
 } else {
   stop("Please specifiy whether you want to run this script on a sample or on the full dataset by setting the flag run_on_sample =")
 }

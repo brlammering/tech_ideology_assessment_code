@@ -226,6 +226,7 @@ message(sprintf("SEC codes matched: %d", sum(sic_lookup$in_sec)))
 
 # How many SEC-listed codes land in the residual bucket rather than an
 # explicit FF range? Worth eyeballing before you trust the classification.
+print("Numbers of SIC-codes in the residual category:")
 sic_lookup |>
   filter(in_sec) |>
   summarise(across(ends_with("_explicit"), \(x) sum(!x))) |>

@@ -33,39 +33,20 @@ if(run_on_sample == TRUE) {
   # import sample 
   contributors <- open_dataset("data/analysis/processed_contributors_parquet_sample", format = "parquet") |> 
     to_duckdb(con, "processed_contributors_parquet_sample")
+
+  contributions <- open_dataset("data/analysis/processed_contributions_parquet_sample", format = "parquet") |> 
+    to_duckdb(con, "processed_contributions_parquet_sample")
+
 } else if(run_on_sample == FALSE) {
   # import full dataset
   contributors <- open_dataset("data/analysis/processed_contributors_parquet", format = "parquet") |> 
     to_duckdb(con, "processed_contributors_parquet")
+
+  contributions <- open_dataset("data/analysis/processed_contributions_parquet", format = "parquet") |> 
+    to_duckdb(con, "processed_contributions_parquet")
 } else {
   stop("Please specifiy whether you want to run this script on a sample or on the full dataset by setting the flag run_on_sample =")
 }
-
-
-# compute mean cfscores per zip-code -------------------------------------
-
-tbl_mean_cfscore_per_city <- contributors |> 
-    group_by(most.recent.contributor.city) |> 
-    summarise(
-        mean_cfscore_per_city = mean(contributor.cfscore)
-    ) |> 
-    select(most.recent.contributor.city, mean_cfscore_per_city)
-
-tbl_mean_cfscore_per_zipcode <- contributors |> 
-    group_by(most.recent.contributor.zipcode) |> 
-    summarise(
-        mean_cfscore_per_zipcode = mean(contributor.cfscore)
-    ) |> 
-    select(most.recent.contributor.zipcode, mean_cfscore_per_zipcode)
-
-contributors <- contributors |> 
-    left_join(tbl_mean_cfscore_per_city, by = "most.recent.contributor.city") |> 
-    compute()
-
-contributors <- contributors |> 
-    left_join(tbl_mean_cfscore_per_zipcode, by = "most.recent.contributor.zipcode") |> 
-    compute()
-
 
 # compute modelling dataset and pull into R
 

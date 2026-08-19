@@ -242,8 +242,27 @@ DIME_contributors |>
 
 ## **Local ideological means**
 
+tbl_mean_cfscore_per_city <- DIME_contributors |> 
+    group_by(most.recent.contributor.city) |> 
+    summarise(
+        mean_cfscore_per_city = mean(contributor.cfscore)
+    ) |> 
+    select(most.recent.contributor.city, mean_cfscore_per_city)
 
+tbl_mean_cfscore_per_zipcode <- DIME_contributors |> 
+    group_by(most.recent.contributor.zipcode) |> 
+    summarise(
+        mean_cfscore_per_zipcode = mean(contributor.cfscore)
+    ) |> 
+    select(most.recent.contributor.zipcode, mean_cfscore_per_zipcode)
 
+DIME_contributors <- DIME_contributors |> 
+    left_join(tbl_mean_cfscore_per_city, by = "most.recent.contributor.city") |> 
+    compute()
+
+DIME_contributors <- DIME_contributors |> 
+    left_join(tbl_mean_cfscore_per_zipcode, by = "most.recent.contributor.zipcode") |> 
+    compute()
 
 ## save data, disconnect from the db
 
