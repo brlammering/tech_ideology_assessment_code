@@ -18,8 +18,12 @@ con <- dbConnect(duckdb("tmp/convert.duckdb"))
 
 
 # set memory usage to 4GB max so it doesn't break
-dbExecute(con, "SET memory_limit = '2GB'")
-dbExecute(con, "SET max_temp_directory_size = '100GB'")
+
+# dbExecute(con, "SET max_temp_directory_size = '200GB'")
+
+dbExecute(con, "SET memory_limit = '16GB'")
+dbExecute(con, "SET preserve_insertion_order = false")
+dbExecute(con, "SET threads = 4")
 
 target_cycles <- c(2016, 2020, 2024)
 needed <- sort(unique(c(target_cycles, target_cycles - 2)))
@@ -29,11 +33,23 @@ final_root <- "data/raw/raw_contributions_parquet"
 
 stopifnot(is.logical(run_on_sample), length(run_on_sample) == 1, !is.na(run_on_sample))
 
+cols_to_keep <- c(
+  "bonica.cid", "bonica.rid", "cycle", "transaction.id", "transaction.type",
+  "amount", "contributor.type", "contributor.employer", "contributor.occupation",
+  "contributor.city", "contributor.zipcode", "contributor.cfscore",
+  "candidate.cfscore", "contributor.gender"
+)
+
+col_list <- paste(DBI::dbQuoteIdentifier(con, cols_to_keep), collapse = ", ")
+
 dbExecute(con, glue("
   CREATE OR REPLACE VIEW contribs_raw AS
-  SELECT * FROM read_parquet('{final_root}/**/*.parquet',
-                             hive_partitioning = true,
-                             hive_types = {{'cycle': 'BIGINT'}})"))
+  SELECT {col_list}
+  FROM read_parquet('{final_root}/**/*.parquet',
+                    hive_partitioning = true,
+                    hive_types = {{'cycle': 'BIGINT'}})"))
+
+dbGetQuery(con, "DESCRIBE contribs_raw")
 
 DIME_contributions <- tbl(con, "contribs_raw") |>
   filter(cycle %in% !!needed)
@@ -48,7 +64,8 @@ if (run_on_sample) {
 
   DIME_contributions <- tbl(con, "contribs_raw") |>
     filter(cycle %in% !!needed) |>
-    semi_join(sample_ids, by = "bonica.cid")
+    semi_join(sample_ids, by = "bonica.cid") |> 
+    compute()
 
 }
 
@@ -91,7 +108,9 @@ matched_companies <- edgar_match(
     distinct() |>
     collect() |>
     deframe(),
-  matcher
+  matcher,
+  strict_dist = 0.03,
+  loose_dist = 0.06
 )
 
 # Optional but recommended after the first successful build -- snapshots
@@ -99,17 +118,8 @@ matched_companies <- edgar_match(
 # in seconds instead of hours.
 edgar_backup()
 
-# Attach SIC codes to the contributor table:
-
-
-DIME_contributions <- DIME_contributions |>
-  left_join(matched_companies,
-            join_by(contributor.employer == employer_raw),
-            copy = TRUE) |>
-  compute()
-
 # Diagnostic: match coverage and review queue size.
-DIME_contributions |>
+matched_companies |>
   count(status, match_type) |>
   arrange(desc(n))
 
@@ -121,16 +131,32 @@ matched_companies |>
   count(match_type, employer_raw, matched_name, sort = TRUE) |>
   head(50)
 
-DIME_contributions |> 
+matched_companies |> 
   filter(status == "needs_review") |> 
-  count(contributor.employer, matched_name, sort = TRUE) |> 
+  count(employer_raw, matched_name, sort = TRUE) |> 
+  head(50)
+
+matched_companies |> 
+  filter(status == "auto_accept", match_type == "fuzzy") |> 
+  count(employer_raw, matched_name, sort = TRUE) |> 
   head(50)
 
 # Drop the observations where there is no match or a needs_review match, because they usually don't fit
 
-DIME_contributions <- DIME_contributions |> 
-  filter(status != "no_match" & status != "needs_review") |> 
-  collect()
+matched_keep <- matched_companies |>
+  filter(!status %in% c("no_match", "needs_review"),
+         nzchar(employer_raw)) |>
+  distinct(employer_raw, .keep_all = TRUE)   # guard against fan-out
+
+# Attach SIC codes to the contributor table:
+
+DIME_contributions <- DIME_contributions |>
+  select(bonica.cid, cycle, contributor.employer, contributor.occupation,
+         contributor.city, contributor.zipcode, contributor.cfscore,
+         amount, transaction.type, transaction.id, bonica.rid, candidate.cfscore) |>
+  inner_join(matched_keep, join_by(contributor.employer == employer_raw),
+             copy = TRUE) |>
+  compute()
 
 # Tech Industry ----------------------------------------------------------
 
@@ -188,9 +214,10 @@ source("AH_prep_fama_french_industry_matching.r")
 ff_sic_lookup <- read_csv("data/raw/sic/sic_ff_lookup.csv")
 
 ff_sic_lookup <- ff_sic_lookup |> 
-  filter(in_sec == TRUE)
+  filter(in_sec == TRUE) |> 
+  to_duckdb(con, "ff_sic_lookup")
 
-DIME_contributions <- DIME_contributions |> left_join(sic_lookup, by = c("sic" = "sic"))
+DIME_contributions <- DIME_contributions |> left_join(ff_sic_lookup, by = c("sic" = "sic"))
 
 
 DIME_contributions <- DIME_contributions |> 
@@ -199,8 +226,7 @@ DIME_contributions <- DIME_contributions |>
             ff49_abbr %in% c("Softw", "Hardw", "Chips") ~ TRUE, 
             .default = FALSE
         )
-    ) |> 
-    compute()
+    )
 
 
 ## **Occupation**
@@ -214,48 +240,48 @@ engineer_regex <- paste(engineer_list, collapse = "|")
 manager_list <- get_manager_list()
 
 manager_regex <- paste(manager_list, collapse = "|")
-
-DIME_contributions <- DIME_contributions |>
+occ_lookup <- tbl(con, "contribs_raw") |>
+  filter(cycle %in% !!needed, contributor.type == "I",
+         !is.na(contributor.occupation)) |>
+  distinct(contributor.occupation) |>
+  collect() |>
   mutate(
-    engineer = str_detect(`contributor.occupation`, engineer_regex),
-    manager = str_detect(`contributor.occupation`, manager_regex),
-    other = !engineer & !manager & !is.na(`contributor.occupation`)
-  ) |> 
-  mutate(
-      occupation = case_when(
-          engineer == TRUE & manager == TRUE ~ "manager", # coding this as manager because it is the higher position (is it tho?)
-          engineer == TRUE & manager == FALSE ~ "engineer",
-          engineer == FALSE & manager == TRUE ~ "manager",
-          other == TRUE ~ "other",
-          .default = NA
-      ) |> as.character()
-  ) |> 
-  compute()
+    engineer = str_detect(contributor.occupation, engineer_regex),
+    manager  = str_detect(contributor.occupation, manager_regex),
+    occupation = case_when(manager ~ "manager", engineer ~ "engineer",
+                           .default = "other")
+  ) |>
+  select(contributor.occupation, occupation) |> 
+  to_duckdb(con, "occ_lookup")
 
-DIME_contributions |> 
-  count(occupation)
+DIME_contributions <- DIME_contributions |> 
+  left_join(occ_lookup, join_by("contributor.occupation"))
+
 
 # Local ideological means ------------------------------------------------
 
 
 tbl_mean_cfscore_per_city <- DIME_contributions |> 
-    group_by(contributor.city) |> 
-    summarise(
-        mean_cfscore_per_city = mean(contributor.cfscore)
-    ) |> 
-    select(contributor.city, mean_cfscore_per_city)
+  group_by(contributor.city) |> 
+  summarise(
+      mean_cfscore_per_city = mean(contributor.cfscore),
+      na.rm = TRUE
+  ) |> 
+  select(contributor.city, mean_cfscore_per_city) |> 
+  compute()
 
 tbl_mean_cfscore_per_zipcode <- DIME_contributions |> 
-    group_by(contributor.zipcode) |> 
-    summarise(
-        mean_cfscore_per_zipcode = mean(contributor.cfscore)
-    ) |> 
-    select(contributor.zipcode, mean_cfscore_per_zipcode)
+  group_by(contributor.zipcode) |> 
+  summarise(
+      mean_cfscore_per_zipcode = mean(contributor.cfscore),
+      na.rm = TRUE
+  ) |> 
+  select(contributor.zipcode, mean_cfscore_per_zipcode) |> 
+  compute()
 
 DIME_contributions <- DIME_contributions |> 
     left_join(tbl_mean_cfscore_per_city, by = "contributor.city") |> 
-    left_join(tbl_mean_cfscore_per_zipcode, by = "contributor.zipcode") |> 
-    compute()
+    left_join(tbl_mean_cfscore_per_zipcode, by = "contributor.zipcode")
 
 # Dynamic cfscore means --------------------------------------------------
 
@@ -288,8 +314,7 @@ dyn_cf_matcher <- DIME_contributions |>
            amount > 0 & amount < 5000 ~ ceiling(amount / 100),
            amount >= 5000 ~ 50
          )) |> 
-  select(amount_normalized, bonica.cid, cycle, transaction.type, transaction.id, bonica.rid, candidate.cfscore) |> 
-  compute()
+  select(amount_normalized, bonica.cid, cycle, transaction.type, transaction.id, bonica.rid, candidate.cfscore)
 
 error <- dyn_cf_matcher |> 
   count(transaction.id) |> 
@@ -307,16 +332,12 @@ indiv_by_cycle_init <- dyn_cf_matcher |>
   mutate(prop_of_total = amount_normalized / tot_cycle,
          cfscore_times_prop = candidate.cfscore * prop_of_total) |>
   group_by(bonica.cid, cycle) |>
-  summarize(cfscore_dyn_cycle = sum(cfscore_times_prop, na.rm = T)) |>
-  ungroup()
+  summarize(cfscore_dyn_cycle = sum(cfscore_times_prop, na.rm = TRUE), .groups = "drop") |>
+  ungroup() |> 
+  compute()
 
 DIME_contributions <- DIME_contributions |>
-  filter(bonica.cid %in% indiv_by_cycle_init$bonica.cid) |> # why filter here?
-  left_join(indiv_by_cycle_init, join_by(bonica.cid, cycle))
-
-# contributions_panel_of <- DIME_contributions |>
-#  # filter(bonica.cid %in% indiv_by_cycle_init$bonica.cid) |>
-#   left_join(indiv_by_cycle_init, join_by(bonica.cid, cycle))
+  inner_join(indiv_by_cycle_init, join_by(bonica.cid, cycle)) # so it filters for only the bonica.cids that got assigned a dynamic score
 
 ############################################################################################# STEEL HERE
 
@@ -362,13 +383,25 @@ out_path <- "data/analysis/processed_contributions_parquet"
 
 if(run_on_sample == TRUE) {
 
+  unlink(glue("{out_path}_sample"))
+  dir.create(glue("{out_path}_sample"), recursive = TRUE)
+
   DIME_contributions |> 
-    write_parquet(glue("{out_path}_sample"), chunk_size = 250000)
+    to_arrow() |> 
+    write_dataset(glue("{out_path}_sample"), format = "parquet", partitioning = "cycle")
+
+  # dbExecute(con, glue("
+  #   COPY ({dbplyr::sql_render(DIME_contributions)})
+  #   TO '{out_path}_sample'
+  #   (FORMAT PARQUET, PARTITION_BY (cycle), OVERWRITE_OR_IGNORE)"))
 
 } else if(run_on_sample == FALSE) {
+
+  unlink(out_path)
+  dir.create(out_path, recursive = TRUE)
   
   DIME_contributions |> 
-    write_parquet(out_path, chunk_size = 250000)
+    write_dataset(out_path, partitioning = "cycle")
 }
 
 # shutdown
