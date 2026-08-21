@@ -79,18 +79,15 @@ if (run_on_sample) {
 
 # filter -----------------------------------------------------------------
 
+# filter for individuals
+
 DIME_contributions <- DIME_contributions |>
     filter(
         contributor.type == "I"
     )
 
-# **Firms** ABANDONED ----------------------------------------------------
 
-# see notes on why - merged into one step with industry
-
-
-
-## **Industry**
+# Firms and Industry -----------------------------------------------------
 
 source("AH_SIC_lookup.R")
 
@@ -102,16 +99,16 @@ USER_AGENT <- "Bruno Lammering brunolammering@outlook.de"
 edgar_profiles <- edgar_load(n_workers = 2, n_chunks = 100, duckdb_threads = 1)
 matcher        <- edgar_matcher(edgar_profiles)
 matched_companies <- edgar_match(
-  DIME_contributions |>
-    select(contributor.employer) |>
-    filter(!is.na(contributor.employer)) |> 
-    distinct() |>
-    collect() |>
-    deframe(),
-  matcher,
-  strict_dist = 0.03,
-  loose_dist = 0.06
-)
+    DIME_contributions |>
+      select(contributor.employer) |>
+      filter(!is.na(contributor.employer)) |> 
+      distinct() |>
+      collect() |>
+      deframe(),
+    matcher,
+    strict_dist = 0.03,
+    loose_dist = 0.06
+  )
 
 # Optional but recommended after the first successful build -- snapshots
 # profile_parts/ into backups/, so a future accidental rebuild recovers
@@ -123,24 +120,6 @@ matched_companies |>
   count(status, match_type) |>
   arrange(desc(n))
 
-# Spot-check the highest-frequency needs_review rows before trusting the
-# downstream industry classification -- especially the tech employers
-# the analysis actually hinges on.
-matched_companies |>
-  filter(status == "needs_review") |>
-  count(match_type, employer_raw, matched_name, sort = TRUE) |>
-  head(50)
-
-matched_companies |> 
-  filter(status == "needs_review") |> 
-  count(employer_raw, matched_name, sort = TRUE) |> 
-  head(50)
-
-matched_companies |> 
-  filter(status == "auto_accept", match_type == "fuzzy") |> 
-  count(employer_raw, matched_name, sort = TRUE) |> 
-  head(50)
-
 # Drop the observations where there is no match or a needs_review match, because they usually don't fit
 
 matched_keep <- matched_companies |>
@@ -148,14 +127,12 @@ matched_keep <- matched_companies |>
          nzchar(employer_raw)) |>
   distinct(employer_raw, .keep_all = TRUE)   # guard against fan-out
 
-# Attach SIC codes to the contributor table:
+# Attach SIC codes to the contributor table, filter only for necessary variables in the following:
 
 DIME_contributions <- DIME_contributions |>
-  select(bonica.cid, cycle, contributor.employer, contributor.occupation,
-         contributor.city, contributor.zipcode, contributor.cfscore,
-         amount, transaction.type, transaction.id, bonica.rid, candidate.cfscore) |>
   inner_join(matched_keep, join_by(contributor.employer == employer_raw),
              copy = TRUE) |>
+  mutate(contributor.employer_matched = matched_name) |> 
   compute()
 
 # Tech Industry ----------------------------------------------------------
@@ -229,7 +206,8 @@ DIME_contributions <- DIME_contributions |>
     )
 
 
-## **Occupation**
+
+# Occupation -------------------------------------------------------------
 
 source("AH_get_occupation_lists.r")
 
@@ -248,40 +226,14 @@ occ_lookup <- tbl(con, "contribs_raw") |>
   mutate(
     engineer = str_detect(contributor.occupation, engineer_regex),
     manager  = str_detect(contributor.occupation, manager_regex),
-    occupation = case_when(manager ~ "manager", engineer ~ "engineer",
+    occupation_std = case_when(manager ~ "manager", engineer ~ "engineer",
                            .default = "other")
   ) |>
-  select(contributor.occupation, occupation) |> 
+  select(contributor.occupation, occupation_std) |> 
   to_duckdb(con, "occ_lookup")
 
 DIME_contributions <- DIME_contributions |> 
   left_join(occ_lookup, join_by("contributor.occupation"))
-
-
-# Local ideological means ------------------------------------------------
-
-
-tbl_mean_cfscore_per_city <- DIME_contributions |> 
-  group_by(contributor.city) |> 
-  summarise(
-      mean_cfscore_per_city = mean(contributor.cfscore),
-      na.rm = TRUE
-  ) |> 
-  select(contributor.city, mean_cfscore_per_city) |> 
-  compute()
-
-tbl_mean_cfscore_per_zipcode <- DIME_contributions |> 
-  group_by(contributor.zipcode) |> 
-  summarise(
-      mean_cfscore_per_zipcode = mean(contributor.cfscore),
-      na.rm = TRUE
-  ) |> 
-  select(contributor.zipcode, mean_cfscore_per_zipcode) |> 
-  compute()
-
-DIME_contributions <- DIME_contributions |> 
-    left_join(tbl_mean_cfscore_per_city, by = "contributor.city") |> 
-    left_join(tbl_mean_cfscore_per_zipcode, by = "contributor.zipcode")
 
 # Dynamic cfscore means --------------------------------------------------
 
@@ -377,31 +329,118 @@ DIME_contributions <- DIME_contributions |>
 
 #############################################################################################
 
+# Local ideological means ------------------------------------------------
+
+
+tbl_mean_cfscore_per_city <- DIME_contributions |> 
+  group_by(contributor.city) |> 
+  summarise(
+      mean_cfscore_per_city = mean(contributor.cfscore),
+      na.rm = TRUE
+  ) |> 
+  select(contributor.city, mean_cfscore_per_city) |> 
+  compute()
+
+tbl_mean_cfscore_per_zipcode <- DIME_contributions |> 
+  group_by(contributor.zipcode) |> 
+  summarise(
+      mean_cfscore_per_zipcode = mean(contributor.cfscore),
+      na.rm = TRUE
+  ) |> 
+  select(contributor.zipcode, mean_cfscore_per_zipcode) |> 
+  compute()
+
+DIME_contributions <- DIME_contributions |> 
+    left_join(tbl_mean_cfscore_per_city, by = "contributor.city") |> 
+    left_join(tbl_mean_cfscore_per_zipcode, by = "contributor.zipcode")
+
+#### or would it be better to use the dynamic cfscores here? mean_dyn_cfscore_city_cycle?
+
+#### The problem might be, that there are not enough ppl per zipcode so that it's not useful
+#### Still leave it in to run on the full dataset and then validate!
+
+tbl_mean_dyn_cfscore_city_cycle <- DIME_contributions |> 
+  group_by(contributor.city, cycle) |> 
+  summarise(
+      mean_dyn_cfscore_city_cycle = mean(cfscore_dyn_cycle),
+      na.rm = TRUE
+  ) |> 
+  select(contributor.city, mean_dyn_cfscore_city_cycle) |> 
+  compute()
+
+tbl_mean_dyn_cfscore_zipcode_cycle <- DIME_contributions |> 
+  group_by(contributor.zipcode) |> 
+  summarise(
+      mean_dyn_cfscore_zipcode_cycle = mean(cfscore_dyn_cycle),
+      na.rm = TRUE
+  ) |> 
+  select(contributor.zipcode, mean_dyn_cfscore_zipcode_cycle) |> 
+  compute()
+
+DIME_contributions <- DIME_contributions |> 
+    left_join(tbl_mean_dyn_cfscore_city_cycle, by = "contributor.city") |> 
+    left_join(tbl_mean_dyn_cfscore_zipcode_cycle, by = "contributor.zipcode")
+
+# construction of the panel ----------------------------------------------
+  
+DIME_contributions <- DIME_contributions |> 
+  select(bonica.cid, cycle, contributor.employer, contributor.employer_matched, 
+         contributor.occupation, occupation_std,
+         contributor.city, contributor.zipcode, contributor.cfscore, contributor.gender,
+         cfscore_dyn_cycle, mean_cfscore_per_city, mean_cfscore_per_zipcode,
+         mean_dyn_cfscore_zipcode_cycle, mean_dyn_cfscore_city_cycle) |> 
+  inner_join(DIME_contributions |> distinct(bonica.cid, cycle))
+  
 ## save data, disconnect from the db
+
 
 out_path <- "data/analysis/processed_contributions_parquet"
 
 if(run_on_sample == TRUE) {
 
-  unlink(glue("{out_path}_sample"))
-  dir.create(glue("{out_path}_sample"), recursive = TRUE)
+  out_path <- glue("{out_path}_sample")
 
-  DIME_contributions |> 
-    to_arrow() |> 
-    write_dataset(glue("{out_path}_sample"), format = "parquet", partitioning = "cycle")
-
-  # dbExecute(con, glue("
-  #   COPY ({dbplyr::sql_render(DIME_contributions)})
-  #   TO '{out_path}_sample'
-  #   (FORMAT PARQUET, PARTITION_BY (cycle), OVERWRITE_OR_IGNORE)"))
-
-} else if(run_on_sample == FALSE) {
+  message("Writing the dataset to: ", out_path)
 
   unlink(out_path)
   dir.create(out_path, recursive = TRUE)
   
-  DIME_contributions |> 
-    write_dataset(out_path, partitioning = "cycle")
+  tryCatch({
+    DIME_contributions |> 
+        to_arrow() |> 
+    write_dataset(out_path, format = "parquet", partitioning = "cycle")
+  }, error = function(e) {
+      message("Failed to write dataset: ", conditionMessage(e))
+    }
+  )
+
+} else if(run_on_sample == FALSE) {
+
+  message("Saving the dataset to: ", out_path)
+
+  unlink(out_path)
+  dir.create(out_path, recursive = TRUE)
+  
+  tryCatch(
+    expr = {
+    DIME_contributions |> 
+      write_dataset(out_path, partitioning = "cycle")
+    },
+    error = function(e) {
+      message("Failed to write dataset: ", conditionMessage(e), 
+      "\n Trying another way:")
+
+      tryCatch(
+        expr = {dbExecute(con, glue("
+        COPY ({dbplyr::sql_render(DIME_contributions)})
+        TO 'out_path'
+        (FORMAT PARQUET, PARTITION_BY (cycle), OVERWRITE_OR_IGNORE)"))},
+        error = function(e) {
+        message("Failed as well, shutting down...")
+        }
+      )
+    }
+  )    
 }
 
 # shutdown
