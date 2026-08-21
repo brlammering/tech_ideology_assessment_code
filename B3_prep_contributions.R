@@ -385,7 +385,7 @@ DIME_contributions <- DIME_contributions |>
   
 DIME_contributions <- DIME_contributions |> 
   select(bonica.cid, cycle, contributor.employer, contributor.employer_matched, 
-         contributor.occupation, occupation_std,
+         contributor.occupation, occupation_std, ff49_name, ff49_abbr, ff12_name, ff49_is_tech,
          contributor.city, contributor.zipcode, contributor.cfscore, contributor.gender,
          cfscore_dyn_cycle, mean_cfscore_per_city, mean_cfscore_per_zipcode,
          mean_dyn_cfscore_zipcode_cycle, mean_dyn_cfscore_city_cycle) |> 

@@ -10,13 +10,15 @@ see the file
 
 ## Filter
 
-Filter only individuals that contributed to at least 2 ppl (as did Bonica in order for correct evaluation of the ideal ideological position).
+((((Filter only individuals that contributed to at least 2 ppl (as did Bonica in order for correct evaluation of the ideal ideological position).
 
 Why do this? It filters out around half of the observations? Because in order to compute the CFScores, the data that serves as a basis should be large enough. Only one datapoint is not sufficient for computing ideology. 2 should be fine, 3 is not enough data points (only half of when filtering for 2) and Bonica is also doing that in his own work @bonica
 
 **INCERTAINTY**: Is this really necessary? 2 seems a little bit random, 3 is what Bonica is actually mentioning in his work (2014). It reduces the sample a lot... # problem
 
-=> skip for now, introduce later to see if there is a meaningful difference!
+=> skip for now, introduce later to see if there is a meaningful difference!))))
+
+Filter only for _individuals_, not for other actors (like PACs, ...)
 
 
 ## Firms and Industry

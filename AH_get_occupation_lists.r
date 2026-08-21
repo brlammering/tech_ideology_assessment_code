@@ -24,7 +24,9 @@ get_manager_list <- function(){
     list <- c(
         "manager",
         "ceo",
-        "cfo"
+        "cfo",
+        "president",
+        "director"
     )
     return(list)
 }

@@ -21,7 +21,7 @@ dir.create("tmp", recursive = TRUE, showWarnings = FALSE)
 con <- dbConnect(duckdb("tmp/convert.duckdb"))
 
 # set memory usage to 4GB max so it doesn't break
-dbExecute(con, "SET memory_limit = '2GB'")
+dbExecute(con, "SET memory_limit = '8GB'")
 dbExecute(con, "SET max_temp_directory_size = '100GB'")
 
 if(run_on_sample == TRUE) {
