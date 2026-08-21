@@ -3,12 +3,15 @@
 #######################################################
 
 # preparation ------------------------------------------------------------
-
 library(duckdb)
 library(arrow)
 library(dplyr)
 library(glue)
+library(tictoc)
 
+# start the time keeping
+tictoc::tic()
+start.time <- Sys.time()
 
 # use a persistent duckdb file so internal state spills to disk, not RAM
 if(!dir.exists("tmp")){
@@ -443,6 +446,11 @@ if(run_on_sample == TRUE) {
     }
   )    
 }
+
+# compute time
+tictoc::toc()
+end.time <- Sys.time()
+message("The script B3 took ", end.time - start.time, " seconds to run.")
 
 # shutdown
 dbDisconnect(con)
