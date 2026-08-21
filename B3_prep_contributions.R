@@ -399,46 +399,47 @@ out_path <- "data/analysis/processed_contributions_parquet"
 if(run_on_sample == TRUE) {
 
   out_path <- glue("{out_path}_sample")
-
-  message("Writing the dataset to: ", out_path)
-
   unlink(out_path)
+
+  message("Saving the dataset to: ", out_path)
+
+  unlink(out_path, recursive = TRUE)
   dir.create(out_path, recursive = TRUE)
   
-  tryCatch({
-    DIME_contributions |> 
-        to_arrow() |> 
-    write_dataset(out_path, format = "parquet", partitioning = "cycle")
-  }, error = function(e) {
+  tryCatch(
+    expr = {
+    dbExecute(con, glue("
+      COPY ({dbplyr::sql_render(DIME_contributions)})
+      TO '{out_path}'
+      (FORMAT PARQUET, PARTITION_BY (cycle), OVERWRITE_OR_IGNORE)"))},
+      error = function(e) {
+      message("Failed as well, shutting down...")
+    },
+    error = function(e) {
       message("Failed to write dataset: ", conditionMessage(e))
     }
   )
 
 } else if(run_on_sample == FALSE) {
 
+  unlink(out_path)
+
   message("Saving the dataset to: ", out_path)
 
-  unlink(out_path)
+  unlink(out_path, recursive = TRUE)
   dir.create(out_path, recursive = TRUE)
   
   tryCatch(
     expr = {
-    DIME_contributions |> 
-      write_dataset(out_path, partitioning = "cycle")
+    dbExecute(con, glue("
+      COPY ({dbplyr::sql_render(DIME_contributions)})
+      TO '{out_path}'
+      (FORMAT PARQUET, PARTITION_BY (cycle), OVERWRITE_OR_IGNORE)"))},
+      error = function(e) {
+      message("Failed as well, shutting down...")
     },
     error = function(e) {
-      message("Failed to write dataset: ", conditionMessage(e), 
-      "\n Trying another way:")
-
-      tryCatch(
-        expr = {dbExecute(con, glue("
-        COPY ({dbplyr::sql_render(DIME_contributions)})
-        TO 'out_path'
-        (FORMAT PARQUET, PARTITION_BY (cycle), OVERWRITE_OR_IGNORE)"))},
-        error = function(e) {
-        message("Failed as well, shutting down...")
-        }
-      )
+      message("Failed to write dataset: ", conditionMessage(e))
     }
   )    
 }
